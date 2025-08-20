@@ -315,6 +315,23 @@ async def parse_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/parse/pdf_toc")
+async def parse_pdf_toc(
+    input_s3_path: str = Form(...),
+    output_s3_path: str = Form(...),
+    prompt_mode: str = "prompt_toc_layout_all_en",
+    fitz_preprocess: bool = False
+):
+    try:
+        file_ext = Path(input_s3_path).suffix.lower()
+    except TypeError:
+        raise HTTPException(status_code=400, detail="Invalid filename format")
+    if file_ext not in ['.pdf']:
+        raise HTTPException(
+            status_code=400, detail="Invalid image format. Supported: .pdf")
+
+    return await parse(input_s3_path, output_s3_path, prompt_mode, fitz_preprocess, parse_type="pdf")
+
 
 #------------------------------------stream-----------------------------------------#
 

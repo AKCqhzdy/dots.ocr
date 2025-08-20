@@ -87,12 +87,15 @@ class DotsOCRParser:
         prompt = dict_promptmode_to_prompt[prompt_mode]
         
         # Add previous headings context for Table of Contents aware processing
-        if previous_headings and len(previous_headings) > 0:
-            headings_context = "\n\nPrevious page headings for context:\n"
-            for heading in previous_headings[-10:]:  # Limit to last 10 headings to avoid token overflow
-                headings_context += f"- {heading}\n"
-            prompt = prompt + headings_context
-        
+        if prompt_mode == 'prompt_toc_layout_all_en':
+            if previous_headings and len(previous_headings) > 0:
+                headings_context = ""
+                for heading in previous_headings[-10:]:  # Limit to last 10 headings to avoid token overflow
+                    headings_context += f"- {heading}\n"
+                prompt = prompt.format(previous_headings=headings_context.strip())
+            else:
+                prompt = prompt.format(previous_headings="No previous headings (first page or no headings found)")
+
         if prompt_mode == 'prompt_grounding_ocr':
             assert bbox is not None
             bbox = pre_process_bboxes(origin_image, [bbox], input_width=image.width, input_height=image.height)[0]
