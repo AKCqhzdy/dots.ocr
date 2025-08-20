@@ -48,6 +48,21 @@ class DotsOCRParser:
         assert self.min_pixels is None or self.min_pixels >= MIN_PIXELS
         assert self.max_pixels is None or self.max_pixels <= MAX_PIXELS
 
+    def _extract_headings_from_cells(self, cells):
+        """Extract headings from layout cells for context in subsequent pages."""
+        headings = []
+        if not cells:
+            return headings
+            
+        for cell in cells:
+            # Look for headings in Title and Section-header categories
+            if cell.get('category') in ['Title', 'Section-header'] and cell.get('text'):
+                text = cell['text'].strip()
+                if text:
+                    headings.append(text)
+        
+        return headings
+
     async def _inference_with_vllm(self, image, prompt):
         response = await inference_with_vllm(
             image,
@@ -61,7 +76,7 @@ class DotsOCRParser:
         )
         return response
             
-    def _prepare_image_and_prompt(self, origin_image, prompt_mode, source, fitz_preprocess, bbox):
+    def _prepare_image_and_prompt(self, origin_image, prompt_mode, source, fitz_preprocess, bbox, previous_headings=None):
         """Synchronous, CPU-bound part of image preparation."""
         if source == 'image' and fitz_preprocess:
             image = get_image_by_fitz_doc(origin_image, target_dpi=self.dpi)
@@ -70,6 +85,14 @@ class DotsOCRParser:
             image = fetch_image(origin_image, min_pixels=self.min_pixels, max_pixels=self.max_pixels)
         
         prompt = dict_promptmode_to_prompt[prompt_mode]
+        
+        # Add previous headings context for Table of Contents aware processing
+        if previous_headings and len(previous_headings) > 0:
+            headings_context = "\n\nPrevious page headings for context:\n"
+            for heading in previous_headings[-10:]:  # Limit to last 10 headings to avoid token overflow
+                headings_context += f"- {heading}\n"
+            prompt = prompt + headings_context
+        
         if prompt_mode == 'prompt_grounding_ocr':
             assert bbox is not None
             bbox = pre_process_bboxes(origin_image, [bbox], input_width=image.width, input_height=image.height)[0]
@@ -82,6 +105,10 @@ class DotsOCRParser:
         os.makedirs(save_dir, exist_ok=True)
         result = {}
         cells, _ = post_process_output(response, prompt_mode, origin_image, image)
+        
+        # Extract headings for context in subsequent pages
+        headings = self._extract_headings_from_cells(cells)
+        result['headings'] = headings
         
         try:
             image_with_layout = draw_layout_on_image(origin_image, cells)
@@ -109,14 +136,14 @@ class DotsOCRParser:
 
         return result
 
-    async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False):
+    async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False, previous_headings=None):
         """Asynchronous pipeline for a single image."""
         async with self.semaphore:
             loop = asyncio.get_running_loop()
             
             # 1. Run CPU-bound image prep in executor
             image, prompt = await loop.run_in_executor(
-                CPU_EXECUTOR, self._prepare_image_and_prompt, origin_image, prompt_mode, source, fitz_preprocess, bbox
+                CPU_EXECUTOR, self._prepare_image_and_prompt, origin_image, prompt_mode, source, fitz_preprocess, bbox, previous_headings
             )
             
             # 2. Make non-blocking network call for inference
@@ -164,6 +191,48 @@ class DotsOCRParser:
         
         results.sort(key=lambda x: x["page_no"])
         return results
+
+    async def parse_pdf_with_context(self, input_path, filename, prompt_mode, save_dir):
+        """
+        Parse PDF with heading context from previous pages.
+        Processes pages sequentially to maintain proper heading context.
+        """
+        loop = asyncio.get_running_loop()
+        
+        print(f"Loading PDF: {input_path}")
+        # Run blocking PDF loading in executor
+        images_origin = await loop.run_in_executor(CPU_EXECUTOR, load_images_from_pdf, input_path)
+        
+        total_pages = len(images_origin)
+        print(f"Parsing PDF with context - {total_pages} pages...")
+
+        results = []
+        all_previous_headings = []
+        
+        for i, image in enumerate(images_origin):
+            # For the first page, no previous headings
+            previous_headings = all_previous_headings.copy() if i > 0 else None
+            
+            result = await self._parse_single_image(
+                origin_image=image,
+                prompt_mode=prompt_mode,
+                save_dir=save_dir,
+                save_name=filename,
+                source="pdf",
+                page_idx=i,
+                previous_headings=previous_headings
+            )
+            
+            results.append(result)
+            
+            # Add headings from this page to the context for future pages
+            if 'headings' in result:
+                all_previous_headings.extend(result['headings'])
+                
+            print(f"Completed page {i+1}/{total_pages}")
+        
+        return results
+
 
     async def parse_pdf_stream(self, input_path, filename, prompt_mode, save_dir):
         loop = asyncio.get_running_loop()
