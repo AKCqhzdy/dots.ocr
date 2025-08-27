@@ -77,6 +77,12 @@ class DotsOCRParser:
         
         return image, prompt
 
+    def _process_results(self, response, prompt_mode, origin_image, image):
+        """Synchronous, CPU/IO-bound part of post-processing and saving."""
+        result = {}
+        cells, _ = post_process_output(response, prompt_mode, origin_image, image)
+        return cells
+
     def _process_and_save_results(self, response, prompt_mode, save_dir, save_name, origin_image, image):
         """Synchronous, CPU/IO-bound part of post-processing and saving."""
         os.makedirs(save_dir, exist_ok=True)
@@ -114,6 +120,25 @@ class DotsOCRParser:
         result['md_content_nohf_path'] = md_nohf_path
 
         return result
+
+    async def _parse_single_image_do_not_save(self, origin_image, prompt_mode, source="image", page_idx=0, bbox=None, fitz_preprocess=False):
+        """Asynchronous pipeline for a single image."""
+        async with self.semaphore:
+            loop = asyncio.get_running_loop()
+            
+            # 1. Run CPU-bound image prep in executor
+            image, prompt = await loop.run_in_executor(
+                CPU_EXECUTOR, self._prepare_image_and_prompt, origin_image, prompt_mode, source, fitz_preprocess, bbox
+            )
+            
+            # 2. Make non-blocking network call for inference
+            response = await self._inference_with_vllm(image, prompt)
+            
+            # 3. Run CPU/IO-bound post-processing and saving in executor
+            cells = await loop.run_in_executor(
+                CPU_EXECUTOR, self._process_results, response, prompt_mode, origin_image, image
+            )
+            return cells
 
     async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False):
         """Asynchronous pipeline for a single image."""
