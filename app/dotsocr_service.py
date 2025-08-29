@@ -671,7 +671,7 @@ async def parse(
                         fitz_preprocess=fitz_preprocess
                     )
                 else:
-                    results = await dots_parser.parse_pdf(
+                    results = await dots_parser.parse_pdf_rebuild_directory(
                         input_path=input_file_path,
                         filename=output_file_name,
                         prompt_mode=prompt_mode,
