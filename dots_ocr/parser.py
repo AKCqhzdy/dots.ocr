@@ -12,6 +12,12 @@ from dots_ocr.utils.image_utils import fetch_image
 from dots_ocr.utils.doc_utils import load_images_from_pdf, iter_images_from_pdf, get_pdf_page_count_fitz
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
 from dots_ocr.utils.page_parser import PageParser
+import psutil
+def print_memory_usage(stage: str):
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    # RSS is the Resident Set Size, actual physical memory used
+    print(f"[{stage}] Memory Usage: {mem_info.rss / 1024 / 1024:.2f} MB")
 
 def image_to_base64(image: Image.Image) -> str:
     """Converts a PIL image to a base64 string."""
@@ -78,9 +84,11 @@ class DotsOCRParser:
             for i, image in enumerate(images_origin)
         ]
 
+        print_memory_usage("before gathering tasks")
         if not describe_picture and not rebuild_directory:
             results = await tqdm.gather(*tasks, desc="Processing PDF pages")
             results.sort(key=lambda x: x["page_no"])
+            print_memory_usage("after gathering tasks")
             return results
 
         cells_list = await tqdm.gather(*tasks, desc="Processing PDF pages")

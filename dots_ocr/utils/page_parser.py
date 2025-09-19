@@ -10,6 +10,12 @@ from dots_ocr.utils.image_utils import get_image_by_fitz_doc, fetch_image
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
 from dots_ocr.utils.layout_utils import post_process_output, draw_layout_on_image, pre_process_bboxes
 from dots_ocr.utils.format_transformer import layoutjson2md
+import psutil
+def print_memory_usage(stage: str):
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    # RSS is the Resident Set Size, actual physical memory used
+    print(f"[{stage}] Memory Usage: {mem_info.rss / 1024 / 1024:.2f} MB")
 
 
 class PageParser:
@@ -168,13 +174,15 @@ class PageParser:
         async with self.semaphore:
             loop = asyncio.get_running_loop()
             
+            print_memory_usage(f"{page_idx}: Before processing image")
             # 1. Run CPU-bound image prep in executor
             image, prompt, _ = await loop.run_in_executor(
                 self.cpu_executor, self._prepare_image_and_prompt, origin_image, prompt_mode, source, fitz_preprocess, bbox
             )
+            print_memory_usage(f"{page_idx}: After processing image")
             # 2. Make non-blocking network call for inference
             response = await self._inference_with_vllm(image, prompt)
-
+            print_memory_usage(f"{page_idx}: After inference")
             # 3. Run CPU/IO-bound post-processing and saving in executor
             if save_dir is None: # do not save, just return cells for further processing
                 cells = await loop.run_in_executor(
@@ -188,7 +196,9 @@ class PageParser:
                 )
                 
                 result['page_no'] = page_idx
+                print_memory_usage(f"{page_idx}: After saving results")
                 return result
+                
     
     async def _describe_picture_in_single_page(self, origin_image, cells):
 

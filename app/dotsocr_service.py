@@ -25,6 +25,13 @@ from app.utils.hash import compute_md5
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+import psutil
+def print_memory_usage(stage: str):
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    # RSS is the Resident Set Size, actual physical memory used
+    print(f"[{stage}] Memory Usage: {mem_info.rss / 1024 / 1024:.2f} MB")
+
 
 NUM_WORKERS = 4 
 WORKER_TASKS: List[asyncio.Task] = []
@@ -817,6 +824,7 @@ async def parse(
     rebuild_directory: bool = False,
     describe_picture: bool = False
 ):
+    print_memory_usage("Start of Request")
     is_s3 = False
     if input_s3_path.startswith("s3://") and output_s3_path.startswith("s3://"):
         is_s3 = True
@@ -881,7 +889,7 @@ async def parse(
                             is_s3=is_s3
                         )
                         with open(output_md5_path, 'r') as f:
-                            existing_md5 = f.read().strip()
+                            existing_md5 = f.read().strip() + "lalalala"
                         if existing_md5 == file_md5:
                             if all_files_exist:
                                 logging.info(f"Output files already exist in S3 and MD5 matches for {input_s3_path}. Skipping processing.")
@@ -922,6 +930,7 @@ async def parse(
                 # print(output_file_name)
                 # print(output_md_path)
                 # try:
+                print_memory_usage("Before parsing")
                 if parse_type == "image":
                     results = await dots_parser.parse_image(
                         input_path=str(input_file_path),
@@ -939,6 +948,7 @@ async def parse(
                         rebuild_directory=rebuild_directory,
                         describe_picture=describe_picture,
                     )
+                print_memory_usage("After parsing")
 
 
                 # Format results for all pages
@@ -999,7 +1009,8 @@ async def parse(
                     logging.info(f"upload from s3/oss successfully: {output_file_path}")
                 except Exception as e:
                     raise RuntimeError(f"Failed to upload files to s3/oss: {str(e)}") from e
-
+        
+        print_memory_usage("End of Request")
         return {
             "success": True,
             "total_pages": len(results),
