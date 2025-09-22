@@ -4,9 +4,17 @@ gradio_image_annotation
 PyMuPDF
 openai
 qwen_vl_utils
-transformers==4.51.3
+transformers==4.54
 huggingface_hub
 modelscope
 flash-attn==2.8.0.post2
 accelerate
-hashlib
+
+# additional
+pytest
+pytest-asyncio
+sqlalchemy==2.0.43
+sqlmodel==0.0.25
+boto3
+asyncpg
+psycopg[binary]
