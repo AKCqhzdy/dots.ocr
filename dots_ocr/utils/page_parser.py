@@ -163,7 +163,8 @@ class PageParser:
 
         return result
     
-    async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False, scale_factor=1.0):
+    async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False, scale_factor=1.0, is_exist = False):
+        is_exist = False
         """Asynchronous pipeline for a single image."""
         async with self.semaphore:
             loop = asyncio.get_running_loop()
