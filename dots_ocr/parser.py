@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import httpx
+import logging
 from tqdm.asyncio import tqdm
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
@@ -12,6 +13,16 @@ from dots_ocr.utils.image_utils import fetch_image
 from dots_ocr.utils.doc_utils import load_images_from_pdf, iter_images_from_pdf, get_pdf_page_count_fitz
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
 from dots_ocr.utils.page_parser import PageParser
+
+import psutil
+def log_memory_usage(stage: str):
+    """Logs the current memory usage of the process."""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    # RSS is the Resident Set Size, the portion of memory the process holds in RAM.
+    # Convert bytes to megabytes for readability.
+    rss_mb = mem_info.rss / (1024 * 1024)
+    logging.info(f"Memory check at '{stage}': {rss_mb:.2f} MB")
 
 def image_to_base64(image: Image.Image) -> str:
     """Converts a PIL image to a base64 string."""
@@ -61,6 +72,7 @@ class DotsOCRParser:
         total_pages = len(images_origin)
         print(f"Parsing PDF with {total_pages} pages using concurrency of {self.parser.concurrency_limit}...")
 
+        log_memory_usage("semaphore")
         semaphore = asyncio.Semaphore(self.parser.concurrency_limit)
         async def worker(page_idx, image):
             async with semaphore:
@@ -79,7 +91,8 @@ class DotsOCRParser:
         ]
 
         if not describe_picture and not rebuild_directory:
-            results = await tqdm.gather(*tasks, desc="Processing PDF pages")
+            results = await asyncio.gather(*tasks)
+            log_memory_usage("After parsing pages")
             results.sort(key=lambda x: x["page_no"])
             return results
 

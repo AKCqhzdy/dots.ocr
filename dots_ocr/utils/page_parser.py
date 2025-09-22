@@ -4,12 +4,25 @@ import json
 import asyncio
 import httpx
 from dots_ocr.model.inference import inference_with_vllm
+import logging
 
 from dots_ocr.utils.consts import MIN_PIXELS, MAX_PIXELS
 from dots_ocr.utils.image_utils import get_image_by_fitz_doc, fetch_image
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
 from dots_ocr.utils.layout_utils import post_process_output, draw_layout_on_image, pre_process_bboxes
 from dots_ocr.utils.format_transformer import layoutjson2md
+
+
+import psutil
+def log_memory_usage(stage: str):
+    """Logs the current memory usage of the process."""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    # RSS is the Resident Set Size, the portion of memory the process holds in RAM.
+    # Convert bytes to megabytes for readability.
+    rss_mb = mem_info.rss / (1024 * 1024)
+    logging.info(f"Memory check at '{stage}': {rss_mb:.2f} MB")
+
 
 
 class PageParser:
@@ -163,23 +176,31 @@ class PageParser:
 
         return result
     
-    async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False, scale_factor=1.0):
+    async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False, scale_factor=1.0, is_exist = False):
+        is_exist = False
         """Asynchronous pipeline for a single image."""
         async with self.semaphore:
             loop = asyncio.get_running_loop()
             
+            log_memory_usage(f"{page_idx}--start processing")
             # 1. Run CPU-bound image prep in executor
             image, prompt, _ = await loop.run_in_executor(
                 self.cpu_executor, self._prepare_image_and_prompt, origin_image, prompt_mode, source, fitz_preprocess, bbox
             )
+            log_memory_usage(f"{page_idx}--after image prep")
             # 2. Make non-blocking network call for inference
-            response = await self._inference_with_vllm(image, prompt)
+            # response = await self._inference_with_vllm(image, prompt)
+            response =10 * [ {"bbox": [206, 157, 763, 245], "category": "Text", "text": "TABLE I\nTHREATS ON BLOCKCHAIN THAT CAN BE ENCOUNTERED USING PROBLEMS 1-4"}]
+            response = json.dumps(response)
+            # print(response)
 
+            log_memory_usage(f"{page_idx}--after vllm inference")
             # 3. Run CPU/IO-bound post-processing and saving in executor
             if save_dir is None: # do not save, just return cells for further processing
                 cells = await loop.run_in_executor(
                     self.cpu_executor, self._process_results, response, prompt_mode, origin_image, image, page_idx
                 )
+                log_memory_usage(f"{page_idx}--after processing results")
                 return cells
             else:          
                 save_name_page = f"{save_name}_page_{page_idx}" if source == 'pdf' else save_name
