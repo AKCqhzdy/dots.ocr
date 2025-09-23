@@ -53,12 +53,12 @@ class PageParser:
         response = await inference_with_vllm(
             image,
             prompt, 
-            model_name='/app/models/InternVL3_5-2B',
-            ip='localhost',
-            port=8010,
+            model_name='InternVL3_5-2B',
+            ip='internvl3-5',
+            port=6008,
             temperature=0.1,
             top_p=1.0,
-            max_completion_tokens=2048,
+            max_completion_tokens=8192,
         )
         return response
             
