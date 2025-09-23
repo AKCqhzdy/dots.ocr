@@ -20,7 +20,6 @@ import asyncio
 import httpx
 import re
 from app.utils.storage import StorageManager
-from app.utils.redis import RedisConnector
 from app.utils.hash import compute_md5_file, compute_md5_string
 from app.utils.pg_vector import PGVector, OCRTable
 from datetime import datetime
@@ -78,7 +77,6 @@ dots_parser = DotsOCRParser(
 
 
 storage_manager = StorageManager()
-redis_connector = RedisConnector()
 pg_vector_manager = PGVector()
 
 def parse_s3_path(s3_path: str, is_s3):
@@ -124,7 +122,6 @@ class JobResponseModel(BaseModel):
         }
         return {k: (v if v is not None else "") for k, v in mapping.items()}
         
-    
     def get_table_record(self) -> OCRTable:
         return OCRTable(
             id=self.job_id,
@@ -137,10 +134,6 @@ class JobResponseModel(BaseModel):
             createdAt=self.created_at,
             updatedAt=self.updated_at
         )
-
-# TODO: remove after switch to pgvector completely
-async def update_redis(job: JobResponseModel):
-    redis_connector.hset(f"OCRJobId:{job.job_id}", mapping=dict(job.get_table_record()))
 
 async def update_pgvector(job: JobResponseModel):
     job.updated_at = datetime.utcnow()
