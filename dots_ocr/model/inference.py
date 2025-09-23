@@ -7,6 +7,7 @@ import requests
 from dots_ocr.utils.image_utils import PILimage_to_base64
 from openai import AsyncOpenAI
 import os
+import httpx
 
 async def inference_with_vllm(
         image,
@@ -20,7 +21,7 @@ async def inference_with_vllm(
         ):
     
     addr = f"http://{ip}:{port}/v1"
-    client = AsyncOpenAI(api_key="{}".format(os.environ.get("API_KEY", "0")), base_url=addr)
+    client = AsyncOpenAI(api_key="{}".format(os.environ.get("API_KEY", "0")), base_url=addr, timeout=60)
     messages = []
     messages.append(
         {
@@ -43,7 +44,10 @@ async def inference_with_vllm(
             top_p=top_p)
         response = response.choices[0].message.content
         return response
-    except requests.exceptions.RequestException as e:
-        print(f"request error: {e}")
-        return None
+    except httpx.TimeoutException:
+        print("request timeout")
+        return "timeout"
+    except httpx.RequestError as e:
+        print("request error:", e)
+        return "error"
 

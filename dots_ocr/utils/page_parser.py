@@ -198,7 +198,7 @@ class PageParser:
             info_block for info_block in cells['full_layout_info'] 
             if info_block['category'] == 'Picture'
         ]
-        print(picture_blocks)
+        # print(picture_blocks)
 
         if not picture_blocks:
             return
