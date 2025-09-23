@@ -166,17 +166,7 @@ async def status_check(OCRJobId: str = Form(...)):
     if OCRJobId not in JobResponseDict:
         raise HTTPException(status_code=404, detail="Job ID not found")
     
-    async with JobLocks[OCRJobId]:
-        JobResponse = JobResponseDict[OCRJobId]
-        status = JobResponse.status
-        message = JobResponse.message
-        page_prefix = JobResponse.page_prefix
-
-        if status == "completed":
-            return JobResponse
-        elif status == "failed":
-            return JSONResponse({"OCRJobId": OCRJobId, "status": status, "message": message, "page_prefix": page_prefix}, status_code=500)
-        return JSONResponse({"OCRJobId": OCRJobId, "status": status, "message": message, "page_prefix": page_prefix}, status_code=202)
+    return await get_record_pgvector(OCRJobId)
 
 async def stream_and_upload_generator(
     JobResponse: JobResponseModel
@@ -246,7 +236,7 @@ async def stream_and_upload_generator(
                             is_s3=is_s3
                         )
                         with open(output_md5_path, 'r') as f:
-                            existing_md5 = f.read().strip()
+                            existing_md5 = f.read().strip() + "lalalala"
                         if existing_md5 == file_md5:
                             if all_files_exist:
                                 logging.info(f"Output files already exist in S3 and MD5 matches for {input_s3_path}. Skipping processing.")
@@ -303,10 +293,11 @@ async def stream_and_upload_generator(
                 
                 s3_prefix = f"{output_key}/{output_file_name}_page_"
                 existing_pages = await storage_manager._get_existing_page_indices_s3(output_bucket, s3_prefix)
+                existing_pages = set()
  
                 # parse the PDF file and upload each page's output files
                 all_paths_to_upload = []
-                async for result in dots_parser.parse_pdf(
+                async for result in dots_parser.parse_pdf_stream(
                     input_path=input_file_path,
                     filename=Path(input_file_path).stem,
                     prompt_mode=JobResponse.prompt_mode,
@@ -498,9 +489,9 @@ async def parse_file(
     knowledgebaseId: str = Form(...),
     workspaceId: str = Form(...),
     prompt_mode: str = "prompt_layout_all_en",
-    fitz_preprocess: bool = False,
-    rebuild_directory: bool = False,
-    describe_picture: bool = False
+    fitz_preprocess: bool = Form(False),
+    rebuild_directory: bool = Form(False),
+    describe_picture: bool = Form(False)
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
@@ -534,6 +525,8 @@ async def parse_file(
             # allow re-process but check md5 first in the worker
             pass
 
+    print(rebuild_directory)
+    print(describe_picture)
     JobResponse = JobResponseModel(
         job_id=OCRJobId,
         created_at=datetime.utcnow(),

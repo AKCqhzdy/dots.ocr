@@ -49,7 +49,7 @@ class PageParser:
         )
         return response
     
-    async def _inference_with_vllm_internVL(self, image, prompt):
+    async def _inference_with_vllm_internVL(self, image, prompt="extract the information from this image objectively. if the the image is chart, build a table or tables in Markdown Format after extract information"):
         response = await inference_with_vllm(
             image,
             prompt, 
@@ -60,6 +60,7 @@ class PageParser:
             top_p=1.0,
             max_completion_tokens=8192,
         )
+        print(response)
         return response
             
     def _prepare_image_and_prompt(self, origin_image, prompt_mode, source, fitz_preprocess, bbox):
@@ -193,13 +194,11 @@ class PageParser:
     
     async def _describe_picture_in_single_page(self, origin_image, cells):
 
-        for info_block in cells['full_layout_info']:
-            print(info_block)
-
         picture_blocks = [
             info_block for info_block in cells['full_layout_info'] 
             if info_block['category'] == 'Picture'
         ]
+        print(picture_blocks)
 
         if not picture_blocks:
             return

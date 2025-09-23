@@ -51,7 +51,6 @@ class DotsOCRParser:
         await self.directory_cleaner.reset_header_level(cells_list, images_origin)
 
     async def parse_pdf(self, input_path, filename, prompt_mode, save_dir, rebuild_directory=False, describe_picture=False):
-
         loop = asyncio.get_running_loop()
         
         print(f"Loading PDF: {input_path}")
@@ -86,6 +85,7 @@ class DotsOCRParser:
         cells_list = await tqdm.gather(*tasks, desc="Processing PDF pages")
         cells_list.sort(key=lambda x: x["page_no"])
 
+        
         if describe_picture:
             async def worker_des(page_idx, image):
                 async with semaphore:
@@ -109,6 +109,7 @@ class DotsOCRParser:
             results.append(result)
     
         return results
+
 
     async def parse_pdf_stream(self, input_path, filename, prompt_mode, save_dir, existing_pages=set(), rebuild_directory=False, describe_picture=False):
         
@@ -145,15 +146,18 @@ class DotsOCRParser:
                         cells_list.append(await future)
 
                     if describe_picture:
+                        print("Describing pictures in the PDF...")
                         async def worker_des(page_idx, image):
                             async with semaphore:
+                                print(f"Describing page {page_idx}...")
                                 return await self.parser._describe_picture_in_single_page(
                                     origin_image=image,
                                     cells=cells_list[page_idx],
                                 )
+                        print(pages_info)
                         des_tasks = [
-                            worker_des(i, pages_info[i][0]) 
-                            for i in cells_list["page_no"]
+                            worker_des(info_block["page_no"], pages_info[info_block["page_no"]][0]) 
+                            for info_block in cells_list
                         ]
                         await tqdm.gather(*des_tasks, desc="extracting infomation from picture")
 
