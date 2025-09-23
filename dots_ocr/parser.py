@@ -154,7 +154,7 @@ class DotsOCRParser:
                                     origin_image=image,
                                     cells=cells_list[page_idx],
                                 )
-                        print(pages_info)
+                        # print(pages_info)
                         des_tasks = [
                             worker_des(info_block["page_no"], pages_info[info_block["page_no"]][0]) 
                             for info_block in cells_list

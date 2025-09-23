@@ -60,7 +60,7 @@ class PageParser:
             top_p=1.0,
             max_completion_tokens=8192,
         )
-        print(response)
+        # print(response)
         return response
             
     def _prepare_image_and_prompt(self, origin_image, prompt_mode, source, fitz_preprocess, bbox):
@@ -136,6 +136,9 @@ class PageParser:
 
     async def _save_results(self, cells_with_size, save_dir, save_name, image_origin, scale_factor = 1.0):
 
+        md_content = layoutjson2md(image_origin, cells_with_size["full_layout_info"], text_key='text')
+        md_content_nohf = layoutjson2md(image_origin, cells_with_size["full_layout_info"], text_key='text', no_page_hf=True)
+        
         for cell in cells_with_size["full_layout_info"]:
             cell["bbox"] = [int(float(num) / scale_factor) for num in cell["bbox"]]
         cells_with_size["width"] = int(float(cells_with_size["width"]) / scale_factor)
@@ -149,9 +152,6 @@ class PageParser:
             json.dump(cells_with_size, f, ensure_ascii=False, indent=4)
         result['layout_info_path'] = json_path
 
-        md_content = layoutjson2md(image_origin, cells_with_size["full_layout_info"], text_key='text')
-        md_content_nohf = layoutjson2md(image_origin, cells_with_size["full_layout_info"], text_key='text', no_page_hf=True)
-        
         md_path = os.path.join(save_dir, f"{save_name}.md")
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(md_content)

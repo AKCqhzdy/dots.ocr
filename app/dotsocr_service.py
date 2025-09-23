@@ -236,7 +236,7 @@ async def stream_and_upload_generator(
                             is_s3=is_s3
                         )
                         with open(output_md5_path, 'r') as f:
-                            existing_md5 = f.read().strip() + "lalalala"
+                            existing_md5 = f.read().strip()
                         if existing_md5 == file_md5:
                             if all_files_exist:
                                 logging.info(f"Output files already exist in S3 and MD5 matches for {input_s3_path}. Skipping processing.")
