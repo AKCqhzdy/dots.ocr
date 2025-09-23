@@ -49,17 +49,18 @@ class PageParser:
         )
         return response
     
-    async def _inference_with_vllm_internVL(self, image, prompt):
+    async def _inference_with_vllm_internVL(self, image, prompt="extract the information from this image objectively. if the the image is chart, build a table or tables in Markdown Format after extract information"):
         response = await inference_with_vllm(
             image,
             prompt, 
-            model_name='/app/models/InternVL3_5-2B',
-            ip='localhost',
-            port=8010,
+            model_name='InternVL3_5-2B',
+            ip='internvl3-5',
+            port=6008,
             temperature=0.1,
             top_p=1.0,
-            max_completion_tokens=2048,
+            max_completion_tokens=8192,
         )
+        # print(response)
         return response
             
     def _prepare_image_and_prompt(self, origin_image, prompt_mode, source, fitz_preprocess, bbox):
@@ -135,6 +136,9 @@ class PageParser:
 
     async def _save_results(self, cells_with_size, save_dir, save_name, image_origin, scale_factor = 1.0):
 
+        md_content = layoutjson2md(image_origin, cells_with_size["full_layout_info"], text_key='text')
+        md_content_nohf = layoutjson2md(image_origin, cells_with_size["full_layout_info"], text_key='text', no_page_hf=True)
+        
         for cell in cells_with_size["full_layout_info"]:
             cell["bbox"] = [int(float(num) / scale_factor) for num in cell["bbox"]]
         cells_with_size["width"] = int(float(cells_with_size["width"]) / scale_factor)
@@ -148,9 +152,6 @@ class PageParser:
             json.dump(cells_with_size, f, ensure_ascii=False, indent=4)
         result['layout_info_path'] = json_path
 
-        md_content = layoutjson2md(image_origin, cells_with_size["full_layout_info"], text_key='text')
-        md_content_nohf = layoutjson2md(image_origin, cells_with_size["full_layout_info"], text_key='text', no_page_hf=True)
-        
         md_path = os.path.join(save_dir, f"{save_name}.md")
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(md_content)
@@ -163,7 +164,8 @@ class PageParser:
 
         return result
     
-    async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False, scale_factor=1.0):
+    async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False, scale_factor=1.0, is_exist = False):
+        is_exist = False
         """Asynchronous pipeline for a single image."""
         async with self.semaphore:
             loop = asyncio.get_running_loop()
@@ -192,13 +194,11 @@ class PageParser:
     
     async def _describe_picture_in_single_page(self, origin_image, cells):
 
-        for info_block in cells['full_layout_info']:
-            print(info_block)
-
         picture_blocks = [
             info_block for info_block in cells['full_layout_info'] 
             if info_block['category'] == 'Picture'
         ]
+        print(picture_blocks)
 
         if not picture_blocks:
             return
