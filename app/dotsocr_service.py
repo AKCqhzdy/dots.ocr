@@ -297,42 +297,46 @@ async def stream_and_upload_generator(
  
                 # parse the PDF file and upload each page's output files
                 all_paths_to_upload = []
-                async for result in dots_parser.parse_pdf_stream(
-                    input_path=input_file_path,
-                    filename=Path(input_file_path).stem,
-                    prompt_mode=JobResponse.prompt_mode,
-                    save_dir=output_file_path,
-                    existing_pages=existing_pages,
-                    rebuild_directory=JobResponse.rebuild_directory,
-                    describe_picture=JobResponse.describe_picture
-                ):
-                    page_no = result.get('page_no', -1)
-                    
-                    page_upload_tasks = []
-                    paths_to_upload = {
-                        'md': result.get('md_content_path'),
-                        'md_nohf': result.get('md_content_nohf_path'),
-                        'json': result.get('layout_info_path')
-                    }
-                    for file_type, local_path in paths_to_upload.items():
-                        if local_path:
-                            file_name = Path(local_path).name
-                            s3_key = f"{output_key}/{file_name}"
-                            task = asyncio.create_task(
-                                storage_manager.upload_file(output_bucket, s3_key, local_path, is_s3)
-                            )
-                            page_upload_tasks.append(task)
-                    uploaded_paths_for_page = await asyncio.gather(*page_upload_tasks)                    
 
-                    paths_to_upload['page_no'] = page_no
-                    all_paths_to_upload.append(paths_to_upload)
-                    page_response = {
-                        "success": True,
-                        "message": "parse success",
-                        "page_no": page_no,
-                        "uploaded_files": [path for path in uploaded_paths_for_page if path]
-                    }
-                    yield json.dumps(page_response) + "\n"
+                try:
+                    async for result in dots_parser.parse_pdf_stream(
+                        input_path=input_file_path,
+                        filename=Path(input_file_path).stem,
+                        prompt_mode=JobResponse.prompt_mode,
+                        save_dir=output_file_path,
+                        existing_pages=existing_pages,
+                        rebuild_directory=JobResponse.rebuild_directory,
+                        describe_picture=JobResponse.describe_picture
+                    ):
+                        page_no = result.get('page_no', -1)
+                        
+                        page_upload_tasks = []
+                        paths_to_upload = {
+                            'md': result.get('md_content_path'),
+                            'md_nohf': result.get('md_content_nohf_path'),
+                            'json': result.get('layout_info_path')
+                        }
+                        for file_type, local_path in paths_to_upload.items():
+                            if local_path:
+                                file_name = Path(local_path).name
+                                s3_key = f"{output_key}/{file_name}"
+                                task = asyncio.create_task(
+                                    storage_manager.upload_file(output_bucket, s3_key, local_path, is_s3)
+                                )
+                                page_upload_tasks.append(task)
+                        uploaded_paths_for_page = await asyncio.gather(*page_upload_tasks)                    
+
+                        paths_to_upload['page_no'] = page_no
+                        all_paths_to_upload.append(paths_to_upload)
+                        page_response = {
+                            "success": True,
+                            "message": "parse success",
+                            "page_no": page_no,
+                            "uploaded_files": [path for path in uploaded_paths_for_page if path]
+                        }
+                        yield json.dumps(page_response) + "\n"
+                except Exception as e:
+                    logging.error(f"Error during parsing pages: {str(e)}")
 
 
                 # combine all page to upload
@@ -525,8 +529,6 @@ async def parse_file(
             # allow re-process but check md5 first in the worker
             pass
 
-    print(rebuild_directory)
-    print(describe_picture)
     JobResponse = JobResponseModel(
         job_id=OCRJobId,
         created_at=datetime.utcnow(),
@@ -825,257 +827,6 @@ async def parse_file_old(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
-# #---------------------------directly send file to parser---------------------------
-
-# @app.post("/directly_parse/image")
-# async def directly_parse_image(
-#     file: UploadFile = File(...),
-#     prompt_mode: str = "prompt_layout_all_en",
-#     fitz_preprocess: bool = False
-# ):
-#     """Parse a single image file"""
-#     try:
-#         # Validate upload file
-#         if not file:
-#             raise HTTPException(status_code=400, detail="No file uploaded")
-#         if not file.filename:
-#             raise HTTPException(status_code=400, detail="Missing filename")
-
-#         try:
-#             file_ext = Path(file.filename).suffix.lower()
-#         except TypeError:
-#             raise HTTPException(status_code=400, detail="Invalid filename format")
-
-#         if file_ext not in ['.jpg', '.jpeg', '.png']:
-#             raise HTTPException(
-#                 status_code=400, detail="Invalid image format. Supported: .jpg, .jpeg, .png")
-
-#         # Verify file content
-#         file_content = await file.read()
-#         if not file_content:
-#             raise HTTPException(status_code=400, detail="Uploaded file is empty")
-#         await file.seek(0)  # Reset file pointer after reading
-
-#         # Create temp file with debug logging
-#         print(f"DEBUG: Creating temp file for {file.filename}")
-#         temp_dir = tempfile.mkdtemp()
-#         print(f"DEBUG: Created temp dir {temp_dir}")
-
-#         temp_path = os.path.join(temp_dir, f"upload_{uuid.uuid4().hex}{file_ext}")
-#         print(f"DEBUG: Temp file path will be {temp_path}")
-
-#         # Save uploaded file with validation
-#         file_content = await file.read()
-#         print(f"DEBUG: Read {len(file_content)} bytes from upload")
-
-#         if not isinstance(temp_path, (str, bytes, os.PathLike)):
-#             raise HTTPException(
-#                 status_code=500,
-#                 detail=f"Invalid temp path type: {type(temp_path)}"
-#             )
-
-#         with open(temp_path, "wb") as buffer:
-#             buffer.write(file_content)
-#         print(f"DEBUG: Saved {len(file_content)} bytes to {temp_path}")
-
-#         # Verify file was written
-#         if not os.path.exists(temp_path):
-#             raise HTTPException(
-#                 status_code=500,
-#                 detail="Failed to create temp file"
-#             )
-#         print(f"DEBUG: Temp file exists at {temp_path}")
-
-#         # Process the image with debug logging
-#         print(f"DEBUG: Calling parser with: {temp_path}")
-
-#         # Get absolute path and verify file exists
-#         abs_temp_path = os.path.abspath(temp_path)
-#         if not os.path.exists(abs_temp_path):
-#             raise HTTPException(
-#                 status_code=500,
-#                 detail=f"Temp file not found at {abs_temp_path}"
-#             )
-
-#         # Create and clean output directory
-#         output_dir = tempfile.mkdtemp()
-#         for f in os.listdir(output_dir):
-#             os.remove(os.path.join(output_dir, f))
-
-#         try:
-#             results = dots_parser.parse_image(
-#                 input_path=abs_temp_path,
-#                 filename="api_image",
-#                 prompt_mode=prompt_mode,
-#                 save_dir=output_dir,
-#                 fitz_preprocess=fitz_preprocess
-#             )
-#             print(f"DEBUG: Parser completed successfully=={results}")
-
-#             # Extract and return the relevant data
-#             result = results[0]  # Single result for image
-#             layout_info_path = result.get('layout_info_path')
-#             full_layout_info = {}
-#             if layout_info_path and os.path.exists(layout_info_path):
-#                 try:
-#                     with open(layout_info_path, 'r', encoding='utf-8') as f:
-#                         full_layout_info = json.load(f)
-#                 except Exception as e:
-#                     print(f"WARNING: Failed to read layout info file: {str(e)}")
-
-#         except Exception as e:
-#             print(f"DEBUG: Parser error: {str(e)}")
-#             raise HTTPException(
-#                 status_code=500,
-#                 detail=f"Parser error: {str(e)}"
-#             )
-#         finally:
-#             # Ensure cleanup even if parser fails
-#             if os.path.exists(abs_temp_path):
-#                 os.remove(abs_temp_path)
-#             if os.path.exists(temp_dir):
-#                 os.rmdir(temp_dir)
-#             if os.path.exists(output_dir):
-#                 for f in os.listdir(output_dir):
-#                     os.remove(os.path.join(output_dir, f))
-#                 os.rmdir(output_dir)
-
-#         return {
-#             "success": True,
-#             "total_pages": len(results),
-#             "results": [{"page_no": 0,
-#                          "full_layout_info": full_layout_info}]
-#         }
-
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.post("/directly_parse/pdf")
-# async def directly_parse_pdf(
-#     file: UploadFile = File(...),
-#     prompt_mode: str = "prompt_layout_all_en",
-#     fitz_preprocess: bool = False
-# ):
-#     """Parse a PDF file (multi-page)"""
-#     try:
-#         # Validate upload file
-#         if not file:
-#             raise HTTPException(status_code=400, detail="No file uploaded")
-#         if not file.filename:
-#             raise HTTPException(status_code=400, detail="Missing filename")
-
-#         try:
-#             if Path(file.filename).suffix.lower() != '.pdf':
-#                 raise HTTPException(
-#                     status_code=400, detail="Invalid PDF format. Only .pdf files accepted")
-#         except TypeError:
-#             raise HTTPException(status_code=400, detail="Invalid filename format")
-
-#         # Verify file content
-#         file_content = await file.read()
-#         if not file_content:
-#             raise HTTPException(status_code=400, detail="Uploaded file is empty")
-#         await file.seek(0)  # Reset file pointer after reading
-
-#         # Create temp file
-#         temp_dir = tempfile.mkdtemp()
-#         temp_path = os.path.join(temp_dir, f"upload_{uuid.uuid4().hex}.pdf")
-
-#         # Save uploaded file
-#         with open(temp_path, "wb") as buffer:
-#             buffer.write(await file.read())
-
-#         # Create and clean output directory
-#         output_dir = tempfile.mkdtemp()
-#         for f in os.listdir(output_dir):
-#             os.remove(os.path.join(output_dir, f))
-
-#         try:
-#             # Process the PDF
-#             results = dots_parser.parse_pdf(
-#                 input_path=temp_path,
-#                 filename="api_pdf",
-#                 prompt_mode=prompt_mode,
-#                 save_dir=output_dir
-#             )
-#             print(f"DEBUG: Parser completed successfully=={results}")
-#             # Format results for all pages
-#             formatted_results = []
-#             for result in results:
-#                 layout_info_path = result.get('layout_info_path')
-#                 full_layout_info = {}
-#                 if layout_info_path and os.path.exists(layout_info_path):
-#                     try:
-#                         with open(layout_info_path, 'r', encoding='utf-8') as f:
-#                             full_layout_info = json.load(f)
-#                     except Exception as e:
-#                         print(f"WARNING: Failed to read layout info file: {str(e)}")
-
-#                 formatted_results.append({
-#                     "page_no": result.get('page_no'),
-#                     "full_layout_info": full_layout_info
-#                 })
-
-#             return {
-#                 "success": True,
-#                 "total_pages": len(results),
-#                 "results": formatted_results
-#             }
-
-#         finally:
-#             # Ensure cleanup even if parser fails
-#             if os.path.exists(temp_path):
-#                 os.remove(temp_path)
-#             if os.path.exists(temp_dir):
-#                 os.rmdir(temp_dir)
-#             if os.path.exists(output_dir):
-#                 for f in os.listdir(output_dir):
-#                     os.remove(os.path.join(output_dir, f))
-#                 os.rmdir(output_dir)
-
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.post("/directly_parse/file")
-# async def directly_parse_file(
-#     file: UploadFile = File(...),
-#     prompt_mode: str = "prompt_layout_all_en",
-#     fitz_preprocess: bool = False
-# ):
-#     """Automatically detect file type and parse accordingly"""
-#     try:
-#         # Validate upload file
-#         if not file:
-#             raise HTTPException(status_code=400, detail="No file uploaded")
-#         if not file.filename:
-#             raise HTTPException(status_code=400, detail="Missing filename")
-
-#         try:
-#             file_ext = Path(file.filename).suffix.lower()
-#         except TypeError:
-#             raise HTTPException(status_code=400, detail="Invalid filename format")
-
-#         # Verify file content
-#         file_content = await file.read()
-#         if not file_content:
-#             raise HTTPException(status_code=400, detail="Uploaded file is empty")
-#         await file.seek(0)  # Reset file pointer after reading
-
-#         if file_ext == '.pdf':
-#             return await directly_parse_pdf(file, prompt_mode, fitz_preprocess)
-#         elif file_ext in ['.jpg', '.jpeg', '.png']:
-#             return await directly_parse_image(file, prompt_mode, fitz_preprocess)
-#         else:
-#             raise HTTPException(status_code=400, detail="Unsupported file format")
-
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-    
 
 TARGET_URL = "http://localhost:8000/health"
 async def health_check():
