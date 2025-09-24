@@ -1,9 +1,8 @@
-import asyncio
 import logging
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+import asyncio
+from time import sleep
 from datetime import datetime
-from typing import Dict, Any
 import dotenv
 
 import sys
@@ -21,6 +20,8 @@ dotenv.load_dotenv()
 
 
 class TestPGVector:
+    pg_vector = None
+    
     def sample_ocr_record(self):
         """Create a sample OCR record for testing"""
         record = OCRTable()
@@ -45,11 +46,24 @@ class TestPGVector:
             return connection_string
         raise ValueError("No connection string found in environment")
     
+    def setup_pg_vector(self):
+        """Initialize PGVector instance"""
+        if not self.pg_vector:
+            connection_string = self.get_connection_string()
+            self.pg_vector = PGVector(connection_string)
+            
+    async def close_pg_vector(self):
+        """Close PGVector session"""
+        if self.pg_vector:
+            await self.pg_vector.close()
+            self.pg_vector = None
+    
     @pytest.mark.asyncio
     async def test_init(self):
         """Test PGVector initialization"""
+        self.setup_pg_vector()
         connection_string = self.get_connection_string()
-        pg_vector = PGVector()
+        pg_vector = self.pg_vector
 
         assert pg_vector.connection_string == connection_string
         assert pg_vector.table == OCRTable
@@ -57,9 +71,9 @@ class TestPGVector:
     @pytest.mark.asyncio
     async def test_insert_record(self):
         """Test inserting a new record"""
-        connection_string = self.get_connection_string()
-        pg_vector = PGVector(connection_string)
-        
+        self.setup_pg_vector()
+        pg_vector = self.pg_vector
+
         try:
             # Ensure table exists
             await pg_vector.ensure_table_exists()
@@ -80,14 +94,14 @@ class TestPGVector:
         finally:
             # Clean up
             await pg_vector.delete_record("test_id_123")
-            await pg_vector.close()
+            # await pg_vector.close()
     
     @pytest.mark.asyncio
     async def test_update_record(self):
         """Test updating an existing record"""
-        connection_string = self.get_connection_string()
-        pg_vector = PGVector(connection_string)
-        
+        self.setup_pg_vector()
+        pg_vector = self.pg_vector
+
         try:
             # Ensure table exists
             await pg_vector.ensure_table_exists()
@@ -117,14 +131,14 @@ class TestPGVector:
         finally:
             # Clean up
             await pg_vector.delete_record("test_id_123")
-            await pg_vector.close()
+            # await pg_vector.close()
     
     @pytest.mark.asyncio
     async def test_delete_record(self):
         """Test deleting a record"""
-        connection_string = self.get_connection_string()
-        pg_vector = PGVector(connection_string)
-        
+        self.setup_pg_vector()
+        pg_vector = self.pg_vector
+
         try:
             # Ensure table exists
             await pg_vector.ensure_table_exists()
@@ -148,14 +162,14 @@ class TestPGVector:
         finally:
             # Ensure cleanup (in case test fails)
             await pg_vector.delete_record("test_id_123")
-            await pg_vector.close()
+            # await pg_vector.close()
     
     @pytest.mark.asyncio
     async def test_get_nonexistent_record(self):
         """Test retrieving a record that doesn't exist"""
-        connection_string = self.get_connection_string()
-        pg_vector = PGVector(connection_string)
-        
+        self.setup_pg_vector()
+        pg_vector = self.pg_vector
+
         try:
             # Ensure table exists
             await pg_vector.ensure_table_exists()
@@ -165,14 +179,15 @@ class TestPGVector:
             assert record is None
             
         finally:
-            await pg_vector.close()
+            # await pg_vector.close()
+            pass
     
     @pytest.mark.asyncio
     async def test_update_nonexistent_record(self):
         """Test updating a record that doesn't exist"""
-        connection_string = self.get_connection_string()
-        pg_vector = PGVector(connection_string)
-        
+        self.setup_pg_vector()
+        pg_vector = self.pg_vector
+
         try:
             # Ensure table exists
             await pg_vector.ensure_table_exists()
@@ -183,14 +198,15 @@ class TestPGVector:
             assert result is False
             
         finally:
-            await pg_vector.close()
+            # await pg_vector.close()
+            pass
     
     @pytest.mark.asyncio
     async def test_delete_nonexistent_record(self):
         """Test deleting a record that doesn't exist"""
-        connection_string = self.get_connection_string()
-        pg_vector = PGVector(connection_string)
-        
+        self.setup_pg_vector()
+        pg_vector = self.pg_vector
+
         try:
             # Ensure table exists
             await pg_vector.ensure_table_exists()
@@ -200,10 +216,33 @@ class TestPGVector:
             assert result is False
             
         finally:
-            await pg_vector.close()
+            # await pg_vector.close()
+            pass
 
 
 if __name__ == "__main__":
-    # Run all tests using pytest
-    pytest.main([__file__, "-v"])
+    async def run_all_tests():
+        """Run all tests one by one"""
+        test_instance = TestPGVector()
+        time_interval = 50  # seconds
+        
+        await test_instance.test_init()
+        sleep(time_interval)
+        await test_instance.test_insert_record()
+        sleep(time_interval)
+        await test_instance.test_update_record()
+        sleep(time_interval)
+        await test_instance.test_delete_record()
+        sleep(time_interval)
+        await test_instance.test_get_nonexistent_record()
+        sleep(time_interval)
+        await test_instance.test_update_nonexistent_record()
+        sleep(time_interval)
+        await test_instance.test_delete_nonexistent_record()
+        
+        # Close PGVector session after all tests
+        await test_instance.close_pg_vector()
+    
+    # Run all tests in a single event loop
+    asyncio.run(run_all_tests())
     
