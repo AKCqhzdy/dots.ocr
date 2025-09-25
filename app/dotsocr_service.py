@@ -292,8 +292,6 @@ async def stream_and_upload_generator(
                 JobResponse.page_prefix = f"{output_s3_path}/{output_file_name}_page_"
                 
                 s3_prefix = f"{output_key}/{output_file_name}_page_"
-                existing_pages = await storage_manager._get_existing_page_indices_s3(output_bucket, s3_prefix)
-                existing_pages = set()
  
                 # parse the PDF file and upload each page's output files
                 all_paths_to_upload = []
@@ -304,7 +302,6 @@ async def stream_and_upload_generator(
                         filename=Path(input_file_path).stem,
                         prompt_mode=JobResponse.prompt_mode,
                         save_dir=output_file_path,
-                        existing_pages=existing_pages,
                         rebuild_directory=JobResponse.rebuild_directory,
                         describe_picture=JobResponse.describe_picture
                     ):
@@ -340,46 +337,6 @@ async def stream_and_upload_generator(
 
 
                 # combine all page to upload
-                ## download exist pages
-                for page_no in existing_pages:
-                    json_path = f"{output_file_path}/{output_file_name}_page_{page_no}.json"
-                    md_path = f"{output_file_path}/{output_file_name}_page_{page_no}.md"
-                    md_nohf_path = f"{output_file_path}/{output_file_name}_page_{page_no}_nohf.md"
-                    paths_to_download = {
-                        'md': md_path,
-                        'md_nohf': md_nohf_path,
-                        'json': json_path
-                    }
-                    downloaded_paths_for_page = []
-                    if not (os.path.exists(json_path) and os.path.exists(md_nohf_path) and os.path.exists(md_path)):
-                        page_download_tasks = []
-                        for file_type, local_path in paths_to_download.items():
-                            if local_path:
-                                file_name = Path(local_path).name
-                                s3_key = f"{output_key}/{file_name}"
-                                task = asyncio.create_task(
-                                    storage_manager.download_file(
-                                        bucket=output_bucket, 
-                                        key=s3_key, 
-                                        local_path=local_path, 
-                                        is_s3=is_s3
-                                    )
-                                )
-                                page_download_tasks.append(task)
-                        downloaded_paths_for_page = await asyncio.gather(*page_download_tasks)
-                        
-                        
-                    paths_to_download['page_no'] = page_no
-                    all_paths_to_upload.append(paths_to_download)
-                    page_response = {
-                        "success": True,
-                        "message": "parse output already exists in s3/oss",
-                        "page_no": page_no,
-                        "downloaded_files": [path for path in downloaded_paths_for_page if path]
-                    }
-                    yield json.dumps(page_response) + "\n"
-                        
-                ## combine output
                 all_paths_to_upload.sort(key=lambda item: item['page_no'])
                 output_files = {}
                 try:

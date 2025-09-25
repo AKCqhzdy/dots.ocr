@@ -110,7 +110,7 @@ class DotsOCRParser:
     
         return results
 
-    async def parse_pdf_stream(self, input_path, filename, prompt_mode, save_dir, existing_pages=set(), rebuild_directory=False, describe_picture=False):
+    async def parse_pdf_stream(self, input_path, filename, prompt_mode, save_dir, rebuild_directory=False, describe_picture=False):
         
         total_pages = get_pdf_page_count_fitz(input_path)
         semaphore = asyncio.Semaphore(self.parser.concurrency_limit)
@@ -127,8 +127,7 @@ class DotsOCRParser:
                         save_name=filename if not describe_picture else None,
                         source="pdf",
                         page_idx=page_idx,
-                        scale_factor=scale_factor,
-                        is_exist=page_idx in existing_pages
+                        scale_factor=scale_factor
                     )
                     
                     if describe_picture:
