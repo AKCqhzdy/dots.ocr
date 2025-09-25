@@ -452,7 +452,7 @@ async def parse_file(
     prompt_mode: str = "prompt_layout_all_en",
     fitz_preprocess: bool = Form(False),
     rebuild_directory: bool = Form(False),
-    describe_picture: bool = Form(False)
+    describe_picture: bool = Form(True)
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
