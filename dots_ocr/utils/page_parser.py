@@ -208,7 +208,15 @@ class PageParser:
             async with self.semaphore:  # Use the existing semaphore from PageParser
                 x0, y0, x1, y1 = info_block['bbox']
                 cropped_img = origin_image.crop((x0, y0, x1, y1))
-                prompt = "Describe the picture in detail."
+                prompt = (
+                    "Extract the information from this image objectively."
+                    "Don't omit a single detail."
+                    "Do not provide extra analysis."
+                    "If the image is one or multiple charts, after output the extracted information, "
+                    "also return the extracted data in one or multiple clean markdown table format. "
+                    "The table should include appropriate headers and rows matching the chart data. "
+                    "If it is not a chart, just output the extracted information."
+                )
                 response = await self._inference_with_vllm_internVL(cropped_img, prompt)
                 info_block['text'] = response.strip()
         
