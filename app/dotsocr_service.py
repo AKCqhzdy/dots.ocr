@@ -110,6 +110,7 @@ class JobResponseModel(BaseModel):
     fitz_preprocess: bool = False
     rebuild_directory: bool = False
     describe_picture: bool = False
+    over_write: bool = False
 
     def transform_to_map(self):
         mapping = {
@@ -237,7 +238,7 @@ async def stream_and_upload_generator(
                         )
                         with open(output_md5_path, 'r') as f:
                             existing_md5 = f.read().strip()
-                        if existing_md5 == file_md5:
+                        if existing_md5 == file_md5 and not JobResponse.over_write:
                             if all_files_exist:
                                 logging.info(f"Output files already exist in S3 and MD5 matches for {input_s3_path}. Skipping processing.")
                                 JobResponse.json_url = f"{output_s3_path}/{output_file_name}.json"
@@ -452,7 +453,8 @@ async def parse_file(
     prompt_mode: str = "prompt_layout_all_en",
     fitz_preprocess: bool = Form(False),
     rebuild_directory: bool = Form(False),
-    describe_picture: bool = Form(True)
+    describe_picture: bool = Form(True),
+    over_write: bool = Form(False),
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
@@ -480,7 +482,7 @@ async def parse_file(
     # Get the existing job status from pgvector
     existing_record = await get_record_pgvector(OCRJobId)
     if existing_record:
-        if existing_record.status in ["pending", "retrying", "processing"]:
+        if existing_record.status in ["pending", "retrying", "processing"] and OCRJobId in JobResponseDict:
             return JSONResponse({"OCRJobId": OCRJobId, "status": existing_record.status, "message": "Job is already in progress"}, status_code=202)
         elif existing_record.status == "completed" or existing_record.status == "failed":
             # allow re-process but check md5 first in the worker
@@ -500,7 +502,8 @@ async def parse_file(
         prompt_mode=prompt_mode,
         fitz_preprocess=fitz_preprocess,
         rebuild_directory=rebuild_directory,
-        describe_picture=describe_picture
+        describe_picture=describe_picture,
+        over_write=over_write
     )
     JobResponseDict[OCRJobId] = JobResponse
     JobLocks[OCRJobId] = asyncio.Lock()
