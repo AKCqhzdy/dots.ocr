@@ -13,42 +13,38 @@ from app.utils.pg_vector.table import Base, OCRTable
 
 class PGVector:
     engine: AsyncEngine = None
+    session_maker: async_sessionmaker = None
     connection_string: str = ""
     table: OCRTable = None
-    engine_creation_time: datetime = None
-    flush_interval_seconds: float = None
 
-    def __init__(self, connection_string="", flush_interval_seconds: float = 30):
+    def __init__(self, connection_string=""):
         if not connection_string:
             connection_string = self.get_connection_string()
-        self.flush_interval_seconds = flush_interval_seconds
         self.connection_string = connection_string
         self.table = OCRTable
 
     async def ensure_engine(self) -> AsyncEngine:
         if not self.engine:
             self.engine = create_async_engine(
-                self.connection_string, echo=False, future=True
+                self.connection_string,
+                pool_size=20,  # Number of persistent connections
+                max_overflow=20,  # Additional connections beyond pool_size
+                pool_timeout=30,  # Timeout for getting connection from pool
+                pool_recycle=3600,  # Recycle connections every hour
+                pool_pre_ping=True,  # Verify connections before use
+                echo=False,  # Set to True for SQL logging in development
             )
-            self.engine_creation_time = datetime.utcnow()
-
-        engine_age = (datetime.utcnow() - self.engine_creation_time).total_seconds()
-        if engine_age > self.flush_interval_seconds:
-            logging.info("Recreating engine due to flush interval")
-            await self.engine.dispose()
-            self.engine = create_async_engine(
-                self.connection_string, echo=False, future=True
-            )
-            self.engine_creation_time = datetime.utcnow()
-
         return self.engine
 
     async def get_session(self) -> AsyncSession:
-        engine = await self.ensure_engine()
-        async_session = async_sessionmaker(
-            engine, expire_on_commit=False, class_=AsyncSession
-        )
-        return async_session()
+        if not self.session_maker:
+            engine = await self.ensure_engine()
+            self.session_maker = async_sessionmaker(
+                engine,
+                class_=AsyncSession,
+                expire_on_commit=False,
+            )
+        return self.session_maker()
 
     def get_connection_string(self):
         """PostgreSQL connection string"""
