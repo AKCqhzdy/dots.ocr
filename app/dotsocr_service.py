@@ -238,7 +238,7 @@ async def stream_and_upload_generator(
                         with open(output_md5_path, 'r') as f:
                             existing_md5 = f.read().strip()
                         if existing_md5 == file_md5:
-                            if all_files_exist:
+                            if all_files_exist and not JobResponse.over_write:
                                 logging.info(f"Output files already exist in S3 and MD5 matches for {input_s3_path}. Skipping processing.")
                                 JobResponse.json_url = f"{output_s3_path}/{output_file_name}.json"
                                 JobResponse.md_url = f"{output_s3_path}/{output_file_name}.md"
@@ -450,6 +450,7 @@ async def parse_file(
     knowledgebaseId: str = Form(...),
     workspaceId: str = Form(...),
     prompt_mode: str = "prompt_layout_all_en",
+    over_write: bool = Form(False),
     fitz_preprocess: bool = Form(False),
     rebuild_directory: bool = Form(False),
     describe_picture: bool = Form(True)
@@ -480,7 +481,7 @@ async def parse_file(
     # Get the existing job status from pgvector
     existing_record = await get_record_pgvector(OCRJobId)
     if existing_record:
-        if existing_record.status in ["pending", "retrying", "processing"]:
+        if existing_record.status in ["pending", "retrying", "processing"] and OCRJobId in JobResponseDict:
             return JSONResponse({"OCRJobId": OCRJobId, "status": existing_record.status, "message": "Job is already in progress"}, status_code=202)
         elif existing_record.status == "completed" or existing_record.status == "failed":
             # allow re-process but check md5 first in the worker
@@ -499,6 +500,7 @@ async def parse_file(
         output_s3_path=output_s3_path,
         prompt_mode=prompt_mode,
         fitz_preprocess=fitz_preprocess,
+        over_write=over_write,
         rebuild_directory=rebuild_directory,
         describe_picture=describe_picture
     )
