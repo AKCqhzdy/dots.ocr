@@ -70,7 +70,7 @@ dots_parser = DotsOCRParser(
     ip="localhost",
     port=8000,
     dpi=200,
-    concurrency_limit=8,
+    concurrency_limit=32,
     min_pixels=MIN_PIXELS,
     max_pixels=MAX_PIXELS,
 )
