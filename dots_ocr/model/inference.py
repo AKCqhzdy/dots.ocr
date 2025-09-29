@@ -21,7 +21,7 @@ async def inference_with_vllm(
         ):
     
     addr = f"http://{ip}:{port}/v1"
-    client = AsyncOpenAI(api_key="{}".format(os.environ.get("API_KEY", "0")), base_url=addr, timeout=60)
+    client = AsyncOpenAI(api_key="{}".format(os.environ.get("API_KEY", "0")), base_url=addr, timeout=6000)
     messages = []
     messages.append(
         {
