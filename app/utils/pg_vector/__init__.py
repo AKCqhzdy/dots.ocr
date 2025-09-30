@@ -1,8 +1,8 @@
 from .pg_vector import PGVector
-from .table import OCRTable, status_type
+from .table import OCRTable, JobStatusType
 
 __all__ = [
     "PGVector",
     "OCRTable",
-    "status_type",
+    "JobStatusType",
 ]

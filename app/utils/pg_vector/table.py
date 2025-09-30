@@ -6,7 +6,7 @@ from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
 
-status_type = Literal[
+JobStatusType = Literal[
     "completed",
     "pending",
     "retrying",
@@ -23,7 +23,7 @@ class OCRTable(Base):
     url: str = Column(String, nullable=False)
     markdownUrl: Optional[str] = Column(String, nullable=True)
     jsonUrl: Optional[str] = Column(String, nullable=True)
-    status: Optional[status_type] = Column(String, nullable=True)
+    status: Optional[JobStatusType] = Column(String, nullable=True)
     createdAt: Optional[datetime] = Column(DateTime, nullable=True)
     updatedAt: Optional[datetime] = Column(DateTime, nullable=True)
     createdBy: Optional[str] = Column(String, nullable=True)

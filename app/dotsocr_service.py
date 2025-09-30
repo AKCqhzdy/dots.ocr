@@ -19,17 +19,17 @@ import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from loguru import logger
 from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
 
+from app.utils.executor import Job, JobExecutorPool, JobResponseModel
 from app.utils.hash import compute_md5_file, compute_md5_string
-from app.utils.pg_vector import OCRTable, PGVector, status_type
+from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
@@ -39,66 +39,14 @@ logging.basicConfig(
 )
 
 
-class JobResponseModel(BaseModel):
-    job_id: str
-    created_by: str = "system"
-    updated_by: str = "system"
-    created_at: datetime = None
-    updated_at: datetime = None
-    knowledgebase_id: str
-    workspace_id: str
-    # TODO(xxx): canceled is not supported yet
-    status: status_type
-    message: str
-    is_s3: bool = True
-    parse_type: str = "pdf"
-
-    input_s3_path: str
-    output_s3_path: str
-    page_prefix: str = None
-    json_url: str = None
-    md_url: str = None
-    md_nohf_url: str = None
-
-    prompt_mode: str = "prompt_layout_all_en"
-    fitz_preprocess: bool = False
-    rebuild_directory: bool = False
-    describe_picture: bool = False
-    overwrite: bool = False
-
-    def transform_to_map(self):
-        mapping = {
-            "url": self.output_s3_path,
-            "knowledgebaseId": self.knowledgebase_id,
-            "workspaceId": self.workspace_id,
-            "markdownUrl": self.md_url,
-            "jsonUrl": self.json_url,
-            "status": self.status,
-        }
-        return {k: (v if v is not None else "") for k, v in mapping.items()}
-
-    def get_table_record(self) -> OCRTable:
-        return OCRTable(
-            id=self.job_id,
-            url=self.input_s3_path,
-            markdownUrl=self.md_url,
-            jsonUrl=self.json_url,
-            status=self.status,
-            createdBy=self.created_by,
-            updatedBy=self.updated_by,
-            createdAt=self.created_at,
-            updatedAt=self.updated_at,
-        )
-
-
 ######################################## Constants ########################################
 
-# Number of concurrent jobs that can run.
-NUM_WORKERS = 4
-RETRY_TIMES = 3
+NUM_WORKERS = 4  # Number of concurrent jobs that can run.
+RETRY_TIMES = 3  # Job retry times.
 DPI = 200
-# This is the vllm URL for health check
-TARGET_URL = "http://localhost:8000/health"
+JOB_QUEUE_MAX_SIZE = 0  # 0 means unlimited
+TARGET_URL = "http://localhost:8000/health"  # This is the vllm URL for health check
+
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_DIR = BASE_DIR / "input"
 OUTPUT_DIR = BASE_DIR / "output"
@@ -121,10 +69,9 @@ dots_parser = DotsOCRParser(
 )
 storage_manager = StorageManager()
 pg_vector_manager = PGVector()
-
-# TODO(tatiana): failure recovery from persistent storage
-job_response_dict: Dict[str, JobResponseModel] = {}
-job_queue = asyncio.Queue()
+job_executor_pool = JobExecutorPool(
+    pool_size=NUM_WORKERS, max_queue_size=JOB_QUEUE_MAX_SIZE
+)
 
 
 @asynccontextmanager
@@ -134,20 +81,13 @@ async def lifespan(_: FastAPI):
 
     await pg_vector_manager.ensure_table_exists()
 
-    logging.info("Starting up %s worker tasks...", NUM_WORKERS)
-    worker_tasks: List[asyncio.Task] = []
-    for i in range(NUM_WORKERS):
-        task = asyncio.create_task(worker(f"Worker-{i}"))
-        worker_tasks.append(task)
+    job_executor_pool.start()
 
     yield
 
-    logging.info("Shutting down and canceling worker tasks...")
-    for task in worker_tasks:
-        task.cancel()
-
-    await asyncio.gather(*worker_tasks, return_exceptions=True)
-    logging.info("All worker tasks have been canceled.")
+    job_executor_pool.stop()
+    pg_vector_manager.flush()
+    pg_vector_manager.close()
 
 
 app = FastAPI(
@@ -195,9 +135,6 @@ async def get_record_pgvector(job_id: str) -> OCRTable:
 
 @app.post("/status")
 async def status_check(ocr_job_id: str = Form(alias="OCRJobId")):
-    # if ocr_job_id not in JobResponseDict:
-    #     raise HTTPException(status_code=404, detail=f"Job ID {ocr_job_id} not found")
-
     return await get_record_pgvector(ocr_job_id)
 
 
@@ -286,7 +223,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                         )
                         with open(output_md5_path, "r", encoding="utf-8") as f:
                             existing_md5 = f.read().strip()
-                        if existing_md5 == file_md5 and not JobResponse.overwrite:
+                        if existing_md5 == file_md5 and not job_response.overwrite:
                             if all_files_exist:
                                 logging.info(
                                     "Output files already exist in S3 and MD5 matches for %s. Skipping processing.",
@@ -312,15 +249,14 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 }
                                 yield json.dumps(skip_response) + "\n"
                                 return
-                            logging.info(
-                                "MD5 matches for %s, but some output files are missing. Reprocessing the file.",
-                                input_s3_path,
+                            logger.info(
+                                f"MD5 matches for {input_s3_path}, but some output files are missing. Reprocessing the file.",
                             )
                         else:
                             # clean the whole output directory in S3
                             # print(f"Cleaning output directory in S3: {output_bucket}/{output_key}/")
                             # await storage_manager.delete_files_in_directory(output_bucket, f"{output_key}/", is_s3)
-                            logging.info(
+                            logger.info(
                                 f"MD5 mismatch for {input_s3_path} or overwrite is set true. Reprocessing the file."
                             )
                     except Exception as e:
@@ -371,24 +307,24 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                 all_paths_to_upload = []
 
                 try:
-                    if JobResponse.parse_type == "image":
+                    if job_response.parse_type == "image":
                         result = await dots_parser.parse_image(
                             input_path=str(input_file_path),
                             filename=output_file_name,
-                            prompt_mode=JobResponse.prompt_mode,
+                            prompt_mode=job_response.prompt_mode,
                             save_dir=output_file_path,
-                            fitz_preprocess=JobResponse.fitz_preprocess,
-                            describe_picture=JobResponse.describe_picture,
+                            fitz_preprocess=job_response.fitz_preprocess,
+                            describe_picture=job_response.describe_picture,
                         )
                         all_paths_to_upload.append(result)
                     else:
                         async for result in dots_parser.parse_pdf_stream(
                             input_path=input_file_path,
                             filename=Path(input_file_path).stem,
-                            prompt_mode=JobResponse.prompt_mode,
+                            prompt_mode=job_response.prompt_mode,
                             save_dir=output_file_path,
-                            rebuild_directory=JobResponse.rebuild_directory,
-                            describe_picture=JobResponse.describe_picture,
+                            rebuild_directory=job_response.rebuild_directory,
+                            describe_picture=job_response.describe_picture,
                         ):
                             page_no = result.get("page_no", -1)
 
@@ -426,7 +362,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                 except Exception as e:
                     logging.error("Error during parsing pages: %s", e)
 
-                if JobResponse.parse_type == "pdf":
+                if job_response.parse_type == "pdf":
                     # combine all page to upload
                     all_paths_to_upload.sort(key=lambda item: item["page_no"])
                     output_files = {}
@@ -527,56 +463,13 @@ async def attempt_to_process_job(job: JobResponseModel):
     job.message = f"Processing job, attempt number: {attempt_num}"
 
     try:
-        async for page_result in stream_and_upload_generator(job):
+        async for _ in stream_and_upload_generator(job):
             pass
     except Exception as e:
         logging.error(
             "Job %s failed on attempt %s with error: %s", job.job_id, attempt_num, e
         )
         raise
-
-
-async def worker(worker_id: str):
-    print(f"{worker_id} started")
-    while True:
-        try:
-            job_id = await job_queue.get()
-
-            job_response = job_response_dict.get(job_id)
-            if not job_response:
-                logging.error(
-                    "%s: Job ID '%s' found in queue but not in JobResponseDict. Discarding task.",
-                    worker_id,
-                    job_id,
-                )
-                job_queue.task_done()
-                continue
-
-            try:
-                await attempt_to_process_job(job_response)
-                logging.info("Job %s successfully processed.", job_response.job_id)
-                job_response.status = "completed"
-                job_response.message = "Job completed successfully"
-            except Exception as e:
-                logging.error(
-                    "Job %s failed after %s attempts. Final error: %s",
-                    job_response.job_id,
-                    RETRY_TIMES,
-                    e,
-                    exc_info=True,
-                )
-                job_response.status = "failed"
-                job_response.message = (
-                    f"Job failed after multiple retries. Final error: {str(e)}"
-                )
-            await update_pgvector(job_response)
-            job_queue.task_done()
-
-        except asyncio.CancelledError:
-            logging.info("%s is shutting down.", worker_id)
-            break
-        except Exception as e:
-            logging.error("Unexpected error in %s: %s", worker_id, e)
 
 
 @app.post("/parse/file")
@@ -620,7 +513,7 @@ async def parse_file(
 
     # Get the existing job status from pgvector
     existing_record = await get_record_pgvector(ocr_job_id)
-    if existing_record and ocr_job_id in job_response_dict:
+    if existing_record and job_executor_pool.is_job_waiting(ocr_job_id):
         if existing_record.status in ["pending", "retrying", "processing"]:
             return JSONResponse(
                 {
@@ -636,8 +529,8 @@ async def parse_file(
 
     job_response = JobResponseModel(
         job_id=ocr_job_id,
-        created_at=datetime.now(UTC).replace(tzinfo=None),
-        updated_at=datetime.now(UTC).replace(tzinfo=None),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
         status="pending",
         knowledgebase_id=knowledgebase_id,
         workspace_id=workspace_id,
@@ -653,9 +546,14 @@ async def parse_file(
         overwrite=overwrite,
     )
     logging.info("Job %s created. %s", ocr_job_id, job_response)
-    job_response_dict[ocr_job_id] = job_response
     await update_pgvector(job_response)
-    await job_queue.put(ocr_job_id)
+    await job_executor_pool.add_job(
+        Job(
+            job_response,
+            execute=attempt_to_process_job,
+            on_status_change=update_pgvector,
+        )
+    )
 
     return JSONResponse({"OCRJobId": ocr_job_id}, status_code=200)
 
