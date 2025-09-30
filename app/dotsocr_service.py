@@ -295,6 +295,8 @@ async def stream_and_upload_generator(
  
                 # parse the PDF file and upload each page's output files
                 all_paths_to_upload = []
+                failed_pages = []
+                successful_pages = []
 
                 try:
                     async for result in dots_parser.parse_pdf_stream(
@@ -307,34 +309,60 @@ async def stream_and_upload_generator(
                     ):
                         page_no = result.get('page_no', -1)
                         
-                        page_upload_tasks = []
-                        paths_to_upload = {
-                            'md': result.get('md_content_path'),
-                            'md_nohf': result.get('md_content_nohf_path'),
-                            'json': result.get('layout_info_path')
-                        }
-                        for file_type, local_path in paths_to_upload.items():
-                            if local_path:
-                                file_name = Path(local_path).name
-                                s3_key = f"{output_key}/{file_name}"
-                                task = asyncio.create_task(
-                                    storage_manager.upload_file(output_bucket, s3_key, local_path, is_s3)
-                                )
-                                page_upload_tasks.append(task)
-                        uploaded_paths_for_page = await asyncio.gather(*page_upload_tasks)                    
+                        # Check if this page had parsing errors
+                        if result.get('error') or result.get('success') is False:
+                            failed_pages.append(page_no)
+                            page_response = {
+                                "success": False,
+                                "message": f"Page {page_no} parse failed: {result.get('error', 'Unknown error')}",
+                                "page_no": page_no,
+                                "uploaded_files": []
+                            }
+                            yield json.dumps(page_response) + "\n"
+                            continue
+                        
+                        try:
+                            page_upload_tasks = []
+                            paths_to_upload = {
+                                'md': result.get('md_content_path'),
+                                'md_nohf': result.get('md_content_nohf_path'),
+                                'json': result.get('layout_info_path')
+                            }
+                            for file_type, local_path in paths_to_upload.items():
+                                if local_path:
+                                    file_name = Path(local_path).name
+                                    s3_key = f"{output_key}/{file_name}"
+                                    task = asyncio.create_task(
+                                        storage_manager.upload_file(output_bucket, s3_key, local_path, is_s3)
+                                    )
+                                    page_upload_tasks.append(task)
+                            uploaded_paths_for_page = await asyncio.gather(*page_upload_tasks)                    
 
-                        paths_to_upload['page_no'] = page_no
-                        all_paths_to_upload.append(paths_to_upload)
-                        page_response = {
-                            "success": True,
-                            "message": "parse success",
-                            "page_no": page_no,
-                            "uploaded_files": [path for path in uploaded_paths_for_page if path]
-                        }
-                        yield json.dumps(page_response) + "\n"
+                            paths_to_upload['page_no'] = page_no
+                            all_paths_to_upload.append(paths_to_upload)
+                            successful_pages.append(page_no)
+                            
+                            page_response = {
+                                "success": True,
+                                "message": "parse success",
+                                "page_no": page_no,
+                                "uploaded_files": [path for path in uploaded_paths_for_page if path]
+                            }
+                            yield json.dumps(page_response) + "\n"
+                        except Exception as e:
+                            failed_pages.append(page_no)
+                            logging.error(f"Error processing page {page_no}: {str(e)}")
+                            page_response = {
+                                "success": False,
+                                "message": f"Page {page_no} upload failed: {str(e)}",
+                                "page_no": page_no,
+                                "uploaded_files": []
+                            }
+                            yield json.dumps(page_response) + "\n"
+                            
                 except Exception as e:
                     logging.error(f"Error during parsing pages: {str(e)}")
-
+                    raise
 
                 # combine all page to upload
                 all_paths_to_upload.sort(key=lambda item: item['page_no'])
@@ -376,8 +404,11 @@ async def stream_and_upload_generator(
                 await storage_manager.upload_file(output_bucket, f"{output_key}/{output_file_name}.json", str(output_json_path), is_s3)
 
                 final_response = {
-                    "success": True,
-                    "total_pages": len(all_paths_to_upload),
+                    "success": len(failed_pages) == 0,
+                    "total_pages": len(all_paths_to_upload) + len(failed_pages),
+                    "successful_pages": len(successful_pages),
+                    "failed_pages": len(failed_pages),
+                    "failed_page_numbers": failed_pages,
                     "output_s3_path": output_s3_path
                 }
                 yield json.dumps(final_response) + '\n'
@@ -404,12 +435,30 @@ async def attempt_to_process_job(job: JobResponseModel):
         await update_pgvector(job)
     job.message = f"Processing job, attempt number: {attempt_num}"
 
+    final_result = None
     try:
         async for page_result in stream_and_upload_generator(job):
-            pass
+            # Parse the result to check for final response
+            try:
+                result_data = json.loads(page_result.strip())
+                if 'total_pages' in result_data:  # This is the final response
+                    final_result = result_data
+            except json.JSONDecodeError:
+                continue
+                
     except Exception as e:
         logging.error(f"Job {job.job_id} failed on attempt {attempt_num} with error: {e}")
         raise 
+    
+    # Check if there were any failed pages
+    if final_result and final_result.get('failed_pages', 0) > 0:
+        failed_count = final_result.get('failed_pages', 0)
+        total_count = final_result.get('total_pages', 0)
+        failed_page_numbers = final_result.get('failed_page_numbers', [])
+        
+        error_msg = f"Partial processing failure: {failed_count}/{total_count} pages failed. Failed pages: {failed_page_numbers}"
+        logging.warning(f"Job {job.job_id}: {error_msg}")
+        raise RuntimeError(error_msg)
 
 async def worker(worker_id: str):
     print(f"{worker_id} started")

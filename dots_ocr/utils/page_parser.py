@@ -3,6 +3,7 @@ import os
 import json
 import asyncio
 import httpx
+import logging
 from dots_ocr.model.inference import inference_with_vllm
 
 from dots_ocr.utils.consts import MIN_PIXELS, MAX_PIXELS
@@ -166,30 +167,39 @@ class PageParser:
     
     async def _parse_single_image(self, origin_image, prompt_mode, save_dir, save_name, source="image", page_idx=0, bbox=None, fitz_preprocess=False, scale_factor=1.0):
         """Asynchronous pipeline for a single image."""
-        async with self.semaphore:
-            loop = asyncio.get_running_loop()
-            
-            # 1. Run CPU-bound image prep in executor
-            image, prompt, _ = await loop.run_in_executor(
-                self.cpu_executor, self._prepare_image_and_prompt, origin_image, prompt_mode, source, fitz_preprocess, bbox
-            )
-            # 2. Make non-blocking network call for inference
-            response = await self._inference_with_vllm(image, prompt)
-
-            # 3. Run CPU/IO-bound post-processing and saving in executor
-            if save_dir is None: # do not save, just return cells for further processing
-                cells = await loop.run_in_executor(
-                    self.cpu_executor, self._process_results, response, prompt_mode, origin_image, image, page_idx
-                )
-                return cells
-            else:          
-                save_name_page = f"{save_name}_page_{page_idx}" if source == 'pdf' else save_name
-                result = await loop.run_in_executor(
-                    self.cpu_executor, self._process_and_save_results, response, prompt_mode, save_dir, save_name_page, origin_image, image, scale_factor
-                )
+        try:
+            async with self.semaphore:
+                loop = asyncio.get_running_loop()
                 
-                result['page_no'] = page_idx
-                return result
+                # 1. Run CPU-bound image prep in executor
+                image, prompt, _ = await loop.run_in_executor(
+                    self.cpu_executor, self._prepare_image_and_prompt, origin_image, prompt_mode, source, fitz_preprocess, bbox
+                )
+                # 2. Make non-blocking network call for inference
+                response = await self._inference_with_vllm(image, prompt)
+
+                # 3. Run CPU/IO-bound post-processing and saving in executor
+                if save_dir is None: # do not save, just return cells for further processing
+                    cells = await loop.run_in_executor(
+                        self.cpu_executor, self._process_results, response, prompt_mode, origin_image, image, page_idx
+                    )
+                    return cells
+                else:          
+                    save_name_page = f"{save_name}_page_{page_idx}" if source == 'pdf' else save_name
+                    result = await loop.run_in_executor(
+                        self.cpu_executor, self._process_and_save_results, response, prompt_mode, save_dir, save_name_page, origin_image, image, scale_factor
+                    )
+                    
+                    result['page_no'] = page_idx
+                    return result
+        except Exception as e:
+            # Return consistent error format instead of raising
+            logging.error(f"Error in _parse_single_image for page {page_idx}: {str(e)}")
+            return {
+                "page_no": page_idx,
+                "success": False,
+                "error": str(e)
+            }
     
     async def _describe_picture_in_single_page(self, origin_image, cells):
 

@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 import base64
 from io import BytesIO
+import logging
 
 from dots_ocr.utils.image_utils import fetch_image
 from dots_ocr.utils.doc_utils import load_images_from_pdf, iter_images_from_pdf, get_pdf_page_count_fitz
@@ -120,26 +121,47 @@ class DotsOCRParser:
             
             async def worker(page_idx, image, scale_factor):
                 async with semaphore:
-                    result = await self.parser._parse_single_image(
-                        origin_image=image,
-                        prompt_mode=prompt_mode,
-                        save_dir=save_dir if not describe_picture else None, #! rebuild
-                        save_name=filename if not describe_picture else None,
-                        source="pdf",
-                        page_idx=page_idx,
-                        scale_factor=scale_factor
-                    )
-                    
-                    if describe_picture:
-                        await self.parser._describe_picture_in_single_page(
+                    try:
+                        result = await self.parser._parse_single_image(
                             origin_image=image,
-                            cells=result,
+                            prompt_mode=prompt_mode,
+                            save_dir=save_dir if not describe_picture else None, #! rebuild
+                            save_name=filename if not describe_picture else None,
+                            source="pdf",
+                            page_idx=page_idx,
+                            scale_factor=scale_factor
                         )
-                        save_name_page = f"{filename}_page_{result['page_no']}"
-                        result = await self.parser._save_results(result, save_dir, save_name_page, image, scale_factor)
+                        
+                        if describe_picture:
+                            try:
+                                await self.parser._describe_picture_in_single_page(
+                                    origin_image=image,
+                                    cells=result,
+                                )
+                                save_name_page = f"{filename}_page_{result['page_no']}"
+                                result = await self.parser._save_results(result, save_dir, save_name_page, image, scale_factor)
+                            except Exception as e:
+                                logging.error(f"Error in describe_picture for page {page_idx}: {str(e)}")
+                                # Return error result for this page
+                                pbar.update(1)
+                                return {
+                                    "page_no": page_idx,
+                                    "success": False,
+                                    "error": f"Describe picture failed: {str(e)}"
+                                }
 
-                    pbar.update(1)
-                    return result
+                        pbar.update(1)
+                        return result
+                        
+                    except Exception as e:
+                        logging.error(f"Error processing page {page_idx}: {str(e)}")
+                        pbar.update(1)
+                        # Return error result instead of raising exception
+                        return {
+                            "page_no": page_idx,
+                            "success": False,
+                            "error": str(e)
+                        }
 
             tasks = []
             for page_idx, image, scale_factor in iter_images_from_pdf(input_path, dpi=200):
@@ -155,4 +177,3 @@ class DotsOCRParser:
                 for future in asyncio.as_completed(tasks):
                     yield await future
                 # to do: rebuild directory
-                
