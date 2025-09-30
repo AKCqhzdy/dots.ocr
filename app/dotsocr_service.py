@@ -1,11 +1,25 @@
+"""
+Environment variables:
+- Required:
+  - POSTGRES_URL_NO_SSL_DEV: for establishing connection to the PostgreSQL database
+- Optional:
+  - OSS_ENDPOINT: the endpoint for accessing the OSS storage
+  - OSS_ACCESS_KEY_ID: the access key for accessing the OSS storage
+  - OSS_ACCESS_KEY_SECRET: the secret key for accessing the OSS storage
+
+File resources:
+- app/input: the directory for storing the input files. Created on startup if not exists.
+- app/output: the directory for storing the output files. Created on startup if not exists.
+"""
+
 import asyncio
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Literal
+from typing import Dict, List
 
 import httpx
 import uvicorn
@@ -15,7 +29,7 @@ from pydantic import BaseModel
 from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
 
 from app.utils.hash import compute_md5_file, compute_md5_string
-from app.utils.pg_vector import OCRTable, PGVector
+from app.utils.pg_vector import OCRTable, PGVector, status_type
 from app.utils.storage import StorageManager
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
@@ -23,73 +37,6 @@ from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
-
-
-NUM_WORKERS = 4
-WORKER_TASKS: List[asyncio.Task] = []
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-
-    await pg_vector_manager.ensure_table_exists()
-
-    logging.info(f"Starting up {NUM_WORKERS} worker tasks...")
-    for i in range(NUM_WORKERS):
-        task = asyncio.create_task(worker(f"Worker-{i}"))
-        WORKER_TASKS.append(task)
-
-    yield
-
-    logging.info("Shutting down and canceling worker tasks...")
-    for task in WORKER_TASKS:
-        task.cancel()
-
-    await asyncio.gather(*WORKER_TASKS, return_exceptions=True)
-    logging.info("All worker tasks have been canceled.")
-
-
-app = FastAPI(
-    title="dotsOCR API",
-    description="API for PDF and image text recognition using dotsOCR by Grant",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-
-BASE_DIR = Path(__file__).resolve().parent
-INPUT_DIR = BASE_DIR / "input"
-OUTPUT_DIR = BASE_DIR / "output"
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(INPUT_DIR, exist_ok=True)
-
-GLOBAL_LOCK_MANAGER = asyncio.Lock()
-PGVECTOR_LOCK = asyncio.Lock()
-PROCESSING_INPUT_LOCKS = {}
-PROCESSING_OUTPUT_LOCKS = {}
-
-dots_parser = DotsOCRParser(
-    ip="localhost",
-    port=8000,
-    dpi=200,
-    concurrency_limit=8,
-    min_pixels=MIN_PIXELS,
-    max_pixels=MAX_PIXELS,
-)
-
-
-storage_manager = StorageManager()
-pg_vector_manager = PGVector()
-
-
-def parse_s3_path(s3_path: str, is_s3):
-    if is_s3:
-        s3_path = s3_path.replace("s3://", "")
-    else:
-        s3_path = s3_path.replace("oss://", "")
-    bucket, *key_parts = s3_path.split("/")
-    return bucket, "/".join(key_parts)
 
 
 class JobResponseModel(BaseModel):
@@ -100,9 +47,8 @@ class JobResponseModel(BaseModel):
     updated_at: datetime = None
     knowledgebase_id: str
     workspace_id: str
-    status: Literal[
-        "pending", "retrying", "processing", "completed", "failed", "canceled"
-    ]  # canceled havn't implemented
+    # TODO(xxx): canceled is not supported yet
+    status: status_type
     message: str
     is_s3: bool = True
     parse_type: str = "pdf"
@@ -145,44 +91,120 @@ class JobResponseModel(BaseModel):
         )
 
 
+######################################## Constants ########################################
+
+# Number of concurrent jobs that can run.
+NUM_WORKERS = 4
+RETRY_TIMES = 3
+DPI = 200
+# This is the vllm URL for health check
+TARGET_URL = "http://localhost:8000/health"
+BASE_DIR = Path(__file__).resolve().parent
+INPUT_DIR = BASE_DIR / "input"
+OUTPUT_DIR = BASE_DIR / "output"
+
+######################################## Resources ########################################
+
+global_lock_manager = asyncio.Lock()
+pgvector_lock = asyncio.Lock()
+processing_input_locks = {}
+# FIXME(tatiana): if input is the same but output path differs, the computation is repeated
+processing_output_locks = {}
+
+dots_parser = DotsOCRParser(
+    ip="localhost",
+    port=8000,
+    dpi=DPI,
+    concurrency_limit=8,
+    min_pixels=MIN_PIXELS,
+    max_pixels=MAX_PIXELS,
+)
+storage_manager = StorageManager()
+pg_vector_manager = PGVector()
+
+# TODO(tatiana): failure recovery from persistent storage
+job_response_dict: Dict[str, JobResponseModel] = {}
+job_queue = asyncio.Queue()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(INPUT_DIR, exist_ok=True)
+
+    await pg_vector_manager.ensure_table_exists()
+
+    logging.info("Starting up %s worker tasks...", NUM_WORKERS)
+    worker_tasks: List[asyncio.Task] = []
+    for i in range(NUM_WORKERS):
+        task = asyncio.create_task(worker(f"Worker-{i}"))
+        worker_tasks.append(task)
+
+    yield
+
+    logging.info("Shutting down and canceling worker tasks...")
+    for task in worker_tasks:
+        task.cancel()
+
+    await asyncio.gather(*worker_tasks, return_exceptions=True)
+    logging.info("All worker tasks have been canceled.")
+
+
+app = FastAPI(
+    title="dotsOCR API",
+    description="API for PDF and image text recognition using dotsOCR by Grant",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+def parse_s3_path(s3_path: str, is_s3):
+    if is_s3:
+        s3_path = s3_path.replace("s3://", "")
+    else:
+        s3_path = s3_path.replace("oss://", "")
+    bucket, *key_parts = s3_path.split("/")
+    return bucket, "/".join(key_parts)
+
+
 async def update_pgvector(job: JobResponseModel):
-    job.updated_at = datetime.utcnow()
-    async with PGVECTOR_LOCK:
-        record = await pg_vector_manager.get_record_by_id(job.job_id)
+    """Insert a new job or update an existing job in the PG database.
 
-        if record:
-            updates = job.get_table_record()
-            await pg_vector_manager.update_record(job.job_id, updates)
-        else:
-            new_record = job.get_table_record()
-            await pg_vector_manager.upsert_record(new_record)
+    Args:
+        job (JobResponseModel): The job to be inserted or updated.
+    """
+    job.updated_at = datetime.now(UTC)
+    # TODO(tatiana): Why do we need to use a lock here? Consider measuring the performance impact.
+    async with pgvector_lock:
+        # await pg_vector_manager.ensure_table_exists()
+        record = job.get_table_record()
+        await pg_vector_manager.upsert_record(record)
 
+        # If there is a problem, it may not be reported immediately after the operation.
+        # Use flush to force the operation to be committed, so that the error can be
+        # reported immediately if exists.
         # await pg_vector_manager.flush()
 
 
 async def get_record_pgvector(job_id: str) -> OCRTable:
-    async with PGVECTOR_LOCK:
+    async with pgvector_lock:
+        # await pg_vector_manager.ensure_table_exists()
         record = await pg_vector_manager.get_record_by_id(job_id)
         return record
 
 
-JobResponseDict: Dict[str, JobResponseModel] = {}
-JobLocks: Dict[str, asyncio.Lock] = {}
-JobQueue = asyncio.Queue()
-
-
 @app.post("/status")
-async def status_check(OCRJobId: str = Form(...)):
-    if OCRJobId not in JobResponseDict:
-        raise HTTPException(status_code=404, detail="Job ID not found")
+async def status_check(ocr_job_id: str = Form(alias="OCRJobId")):
+    # if ocr_job_id not in JobResponseDict:
+    #     raise HTTPException(status_code=404, detail=f"Job ID {ocr_job_id} not found")
 
-    return await get_record_pgvector(OCRJobId)
+    return await get_record_pgvector(ocr_job_id)
 
 
-async def stream_and_upload_generator(JobResponse: JobResponseModel):
-    input_s3_path = JobResponse.input_s3_path
-    output_s3_path = JobResponse.output_s3_path
-    is_s3 = JobResponse.is_s3
+async def stream_and_upload_generator(job_response: JobResponseModel):
+    input_s3_path = job_response.input_s3_path
+    output_s3_path = job_response.output_s3_path
+    is_s3 = job_response.is_s3
 
     try:
 
@@ -190,13 +212,13 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
         input_file_path = INPUT_DIR / file_bucket / file_key
         input_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        async with GLOBAL_LOCK_MANAGER:
-            if input_s3_path not in PROCESSING_INPUT_LOCKS:
-                PROCESSING_INPUT_LOCKS[input_s3_path] = asyncio.Lock()
-            if output_s3_path not in PROCESSING_OUTPUT_LOCKS:
-                PROCESSING_OUTPUT_LOCKS[output_s3_path] = asyncio.Lock()
-        input_lock = PROCESSING_INPUT_LOCKS[input_s3_path]
-        output_lock = PROCESSING_OUTPUT_LOCKS[output_s3_path]
+        async with global_lock_manager:
+            if input_s3_path not in processing_input_locks:
+                processing_input_locks[input_s3_path] = asyncio.Lock()
+            if output_s3_path not in processing_output_locks:
+                processing_output_locks[output_s3_path] = asyncio.Lock()
+        input_lock = processing_input_locks[input_s3_path]
+        output_lock = processing_output_locks[output_s3_path]
 
         async with input_lock:
             async with output_lock:
@@ -209,7 +231,6 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
                         local_path=str(input_file_path),
                         is_s3=is_s3,
                     )
-                    logging.info(f"download from s3/oss successfully: {input_s3_path}")
                 except Exception as e:
                     raise RuntimeError(
                         f"Failed to download file from s3/oss: {str(e)}"
@@ -218,20 +239,22 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
                 # compute MD5 hash of the input file
                 try:
                     file_md5 = (
-                        JobResponse.job_id
+                        job_response.job_id
                         + ":"
                         + compute_md5_file(str(input_file_path))
                     )
-                    logging.info(f"MD5 hash of input file {input_s3_path}: {file_md5}")
+                    logging.info(
+                        "MD5 hash of input file %s: %s", input_s3_path, file_md5
+                    )
                 except Exception as e:
                     logging.error(
-                        f"Failed to compute MD5 hash for {input_s3_path}: {str(e)}"
+                        "Failed to compute MD5 hash for %s: %s", input_s3_path, e
                     )
                     raise RuntimeError(f"Failed to compute MD5 hash: {str(e)}") from e
 
                 # prepare local path
                 output_bucket, output_key = parse_s3_path(output_s3_path, is_s3)
-                output_file_name = output_s3_path.rstrip("/").split("/")[-1]
+                output_file_name = output_s3_path.rstrip("/").rsplit("/", 1)[-1]
                 output_file_path = OUTPUT_DIR / output_bucket / output_key
                 output_md_path = output_file_path / output_file_name
                 output_json_path = output_md_path.with_suffix(".json")
@@ -261,23 +284,24 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
                             local_path=str(output_md5_path),
                             is_s3=is_s3,
                         )
-                        with open(output_md5_path, "r") as f:
+                        with open(output_md5_path, "r", encoding="utf-8") as f:
                             existing_md5 = f.read().strip()
                         if existing_md5 == file_md5 and not JobResponse.overwrite:
                             if all_files_exist:
                                 logging.info(
-                                    f"Output files already exist in S3 and MD5 matches for {input_s3_path}. Skipping processing."
+                                    "Output files already exist in S3 and MD5 matches for %s. Skipping processing.",
+                                    input_s3_path,
                                 )
-                                JobResponse.json_url = (
+                                job_response.json_url = (
                                     f"{output_s3_path}/{output_file_name}.json"
                                 )
-                                JobResponse.md_url = (
+                                job_response.md_url = (
                                     f"{output_s3_path}/{output_file_name}.md"
                                 )
-                                JobResponse.md_nohf_url = (
+                                job_response.md_nohf_url = (
                                     f"{output_s3_path}/{output_file_name}_nohf.md"
                                 )
-                                JobResponse.page_prefix = (
+                                job_response.page_prefix = (
                                     f"{output_s3_path}/{output_file_name}_page_"
                                 )
                                 skip_response = {
@@ -289,7 +313,8 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
                                 yield json.dumps(skip_response) + "\n"
                                 return
                             logging.info(
-                                f"MD5 matches for {input_s3_path}, but some output files are missing. Reprocessing the file."
+                                "MD5 matches for %s, but some output files are missing. Reprocessing the file.",
+                                input_s3_path,
                             )
                         else:
                             # clean the whole output directory in S3
@@ -300,7 +325,9 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
                             )
                     except Exception as e:
                         logging.warning(
-                            f"Failed to verify existing MD5 hash for {input_s3_path}: {str(e)}. Reprocessing the file."
+                            "Failed to verify existing MD5 hash for %s: %s. Reprocessing the file.",
+                            input_s3_path,
+                            e,
                         )
                 else:
                     # clean the whole output directory in S3 for safety
@@ -308,13 +335,14 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
                     # logging.info(f"No MD5 hash found for {input_s3_path}. Cleaning output directory.")
                     # await storage_manager.delete_files_in_directory(output_bucket, f"{output_key}/", is_s3)
                     logging.info(
-                        f"No MD5 hash found for {input_s3_path}. Reprocessing the file."
+                        "No MD5 hash found for %s. Reprocessing the file.",
+                        input_s3_path,
                     )
 
                 # Mismatch or no existing MD5 hash found, save new MD5 hash to a file
-                with open(output_md5_path, "w") as f:
+                with open(output_md5_path, "w", encoding="utf-8") as f:
                     f.write(file_md5)
-                logging.info(f"Saved MD5 hash to {output_md5_path}")
+                logging.info("Saved MD5 hash to %s", output_md5_path)
 
                 # Upload MD5 hash file to S3/OSS
                 try:
@@ -325,21 +353,19 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
                         is_s3,
                     )
                 except Exception as e:
-                    logging.warning(
-                        f"Failed to upload MD5 hash file to s3/oss: {str(e)}"
-                    )
+                    logging.warning("Failed to upload MD5 hash file to s3/oss: %s", e)
 
                 # print(output_bucket, output_key)
                 # print(output_file_name)
                 # print(output_file_path)
                 # print(output_md_path)
 
-                JobResponse.json_url = f"{output_s3_path}/{output_file_name}.json"
-                JobResponse.md_url = f"{output_s3_path}/{output_file_name}.md"
-                JobResponse.md_nohf_url = f"{output_s3_path}/{output_file_name}_nohf.md"
-                JobResponse.page_prefix = f"{output_s3_path}/{output_file_name}_page_"
-
-                f"{output_key}/{output_file_name}_page_"
+                job_response.json_url = f"{output_s3_path}/{output_file_name}.json"
+                job_response.md_url = f"{output_s3_path}/{output_file_name}.md"
+                job_response.md_nohf_url = (
+                    f"{output_s3_path}/{output_file_name}_nohf.md"
+                )
+                job_response.page_prefix = f"{output_s3_path}/{output_file_name}_page_"
 
                 # parse the PDF file and upload each page's output files
                 all_paths_to_upload = []
@@ -398,7 +424,7 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
                             }
                             yield json.dumps(page_response) + "\n"
                 except Exception as e:
-                    logging.error(f"Error during parsing pages: {str(e)}")
+                    logging.error("Error during parsing pages: %s", e)
 
                 if JobResponse.parse_type == "pdf":
                     # combine all page to upload
@@ -484,9 +510,6 @@ async def stream_and_upload_generator(JobResponse: JobResponseModel):
         yield error_msg + "\n"
 
 
-RETRY_TIMES = 3
-
-
 @retry(
     stop=stop_after_attempt(RETRY_TIMES),
     wait=wait_exponential(multiplier=1, min=2, max=60),
@@ -508,7 +531,7 @@ async def attempt_to_process_job(job: JobResponseModel):
             pass
     except Exception as e:
         logging.error(
-            f"Job {job.job_id} failed on attempt {attempt_num} with error: {e}"
+            "Job %s failed on attempt %s with error: %s", job.job_id, attempt_num, e
         )
         raise
 
@@ -517,48 +540,51 @@ async def worker(worker_id: str):
     print(f"{worker_id} started")
     while True:
         try:
-            job_id = await JobQueue.get()
+            job_id = await job_queue.get()
 
-            JobResponse = JobResponseDict.get(job_id)
-            if not JobResponse:
+            job_response = job_response_dict.get(job_id)
+            if not job_response:
                 logging.error(
-                    f"{worker_id}: Job ID '{job_id}' found in queue but not in JobResponseDict. Discarding task."
+                    "%s: Job ID '%s' found in queue but not in JobResponseDict. Discarding task.",
+                    worker_id,
+                    job_id,
                 )
-                JobQueue.task_done()
+                job_queue.task_done()
                 continue
 
             try:
-                await attempt_to_process_job(JobResponse)
-                logging.info(f"Job {JobResponse.job_id} successfully processed.")
+                await attempt_to_process_job(job_response)
+                logging.info("Job %s successfully processed.", job_response.job_id)
+                job_response.status = "completed"
+                job_response.message = "Job completed successfully"
             except Exception as e:
                 logging.error(
-                    f"Job {JobResponse.job_id} failed after 5 attempts. Final error: {e}",
+                    "Job %s failed after %s attempts. Final error: %s",
+                    job_response.job_id,
+                    RETRY_TIMES,
+                    e,
                     exc_info=True,
                 )
-                JobResponse.status = "failed"
-                JobResponse.message = (
+                job_response.status = "failed"
+                job_response.message = (
                     f"Job failed after multiple retries. Final error: {str(e)}"
                 )
-                await update_pgvector(JobResponse)
-
-            JobResponse.status = "completed"
-            JobResponse.message = "Job completed successfully"
-            await update_pgvector(JobResponse)
-            JobQueue.task_done()
+            await update_pgvector(job_response)
+            job_queue.task_done()
 
         except asyncio.CancelledError:
-            logging.info(f"{worker_id} is shutting down.")
+            logging.info("%s is shutting down.", worker_id)
             break
         except Exception as e:
-            logging.error(f"Unexpected error in {worker_id}: {e}")
+            logging.error("Unexpected error in %s: %s", worker_id, e)
 
 
 @app.post("/parse/file")
 async def parse_file(
     input_s3_path: str = Form(...),
     output_s3_path: str = Form(...),
-    knowledgebaseId: str = Form(...),
-    workspaceId: str = Form(...),
+    knowledgebase_id: str = Form(alias="knowledgebaseId"),
+    workspace_id: str = Form(alias="workspaceId"),
     prompt_mode: str = "prompt_layout_all_en",
     fitz_preprocess: bool = Form(False),
     rebuild_directory: bool = Form(False),
@@ -567,8 +593,10 @@ async def parse_file(
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
-    except (TypeError, AttributeError):
-        raise HTTPException(status_code=400, detail="Invalid input_s3_path format")
+    except (TypeError, AttributeError) as err:
+        raise HTTPException(
+            status_code=400, detail="Invalid input_s3_path format"
+        ) from err
 
     supported_formats = [".pdf", ".jpg", ".jpeg", ".png"]
     if file_ext not in supported_formats:
@@ -578,8 +606,8 @@ async def parse_file(
         )
 
     # Current logic: only if input, output, knowledgebaseId, workspaceId are all the same, we consider it as the same job, and add job_id to the md5 file
-    OCRJobId = "job-" + compute_md5_string(
-        f"{input_s3_path}_{output_s3_path}_{knowledgebaseId}_{workspaceId}"
+    ocr_job_id = "job-" + compute_md5_string(
+        f"{input_s3_path}_{output_s3_path}_{knowledgebase_id}_{workspace_id}"
     )
 
     is_s3 = False
@@ -591,33 +619,28 @@ async def parse_file(
         raise RuntimeError("Input and output paths must both be s3:// or oss://")
 
     # Get the existing job status from pgvector
-    existing_record = await get_record_pgvector(OCRJobId)
-    if existing_record:
-        if (
-            existing_record.status in ["pending", "retrying", "processing"]
-            and OCRJobId in JobResponseDict
-        ):
+    existing_record = await get_record_pgvector(ocr_job_id)
+    if existing_record and ocr_job_id in job_response_dict:
+        if existing_record.status in ["pending", "retrying", "processing"]:
             return JSONResponse(
                 {
-                    "OCRJobId": OCRJobId,
+                    "OCRJobId": ocr_job_id,
                     "status": existing_record.status,
                     "message": "Job is already in progress",
                 },
                 status_code=202,
             )
-        elif (
-            existing_record.status == "completed" or existing_record.status == "failed"
-        ):
+        if existing_record.status in ["completed", "failed", "canceled"]:
             # allow re-process but check md5 first in the worker
             pass
 
-    JobResponse = JobResponseModel(
-        job_id=OCRJobId,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+    job_response = JobResponseModel(
+        job_id=ocr_job_id,
+        created_at=datetime.now(UTC).replace(tzinfo=None),
+        updated_at=datetime.now(UTC).replace(tzinfo=None),
         status="pending",
-        knowledgebase_id=knowledgebaseId,
-        workspace_id=workspaceId,
+        knowledgebase_id=knowledgebase_id,
+        workspace_id=workspace_id,
         message="Job is pending",
         is_s3=is_s3,
         input_s3_path=input_s3_path,
@@ -629,12 +652,12 @@ async def parse_file(
         describe_picture=describe_picture,
         overwrite=overwrite,
     )
-    JobResponseDict[OCRJobId] = JobResponse
-    JobLocks[OCRJobId] = asyncio.Lock()
-    await update_pgvector(JobResponse)
-    await JobQueue.put(OCRJobId)
+    logging.info("Job %s created. %s", ocr_job_id, job_response)
+    job_response_dict[ocr_job_id] = job_response
+    await update_pgvector(job_response)
+    await job_queue.put(ocr_job_id)
 
-    return JSONResponse({"OCRJobId": OCRJobId}, status_code=200)
+    return JSONResponse({"OCRJobId": ocr_job_id}, status_code=200)
 
 
 @app.post("/parse/image_old")
@@ -656,9 +679,6 @@ async def parse_file_old(**kwargs):
     raise HTTPException(
         status_code=400, detail="Deprecated API, please use /parse/file instead"
     )
-
-
-TARGET_URL = "http://localhost:8000/health"
 
 
 async def health_check():
@@ -719,4 +739,4 @@ async def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=6008)
+    uvicorn.run(app, host="0.0.0.0", port=6008, reload=True)
