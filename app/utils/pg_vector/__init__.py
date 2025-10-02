@@ -1,5 +1,5 @@
 from .pg_vector import PGVector
-from .table import OCRTable, JobStatusType
+from .table import JobStatusType, OCRTable
 
 __all__ = [
     "PGVector",

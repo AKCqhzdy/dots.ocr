@@ -2,6 +2,7 @@
 Environment variables:
 - Required:
   - POSTGRES_URL_NO_SSL_DEV: for establishing connection to the PostgreSQL database
+  - API_KEY: the API key used in OpenAI API to access LLM services
 - Optional:
   - OSS_ENDPOINT: the endpoint for accessing the OSS storage
   - OSS_ACCESS_KEY_ID: the access key for accessing the OSS storage
@@ -19,75 +20,112 @@ import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from sys import stderr
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
-from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
 
-from app.utils.executor import Job, JobExecutorPool, JobResponseModel
+from app.utils.executor import (
+    Job,
+    JobExecutorPool,
+    JobResponseModel,
+    TaskExecutorPool,
+)
+from app.utils import configs
 from app.utils.hash import compute_md5_file, compute_md5_string
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
+from dots_ocr.model.inference import InferenceTaskOptions
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
+from dots_ocr.utils.page_parser import PageParser, ParseOptions
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
-######################################## Constants ########################################
-
-NUM_WORKERS = 4  # Number of concurrent jobs that can run.
-RETRY_TIMES = 3  # Job retry times.
-DPI = 200
-JOB_QUEUE_MAX_SIZE = 0  # 0 means unlimited
-TARGET_URL = "http://localhost:8000/health"  # This is the vllm URL for health check
-
-BASE_DIR = Path(__file__).resolve().parent
-INPUT_DIR = BASE_DIR / "input"
-OUTPUT_DIR = BASE_DIR / "output"
-
 ######################################## Resources ########################################
 
 global_lock_manager = asyncio.Lock()
 pgvector_lock = asyncio.Lock()
+# In production, an input path corresponds to a certain output path.
+# The same input path will be mapped to different output paths only in testing codes.
 processing_input_locks = {}
-# FIXME(tatiana): if input is the same but output path differs, the computation is repeated
 processing_output_locks = {}
-
-dots_parser = DotsOCRParser(
-    ip="localhost",
-    port=8000,
-    dpi=DPI,
-    concurrency_limit=8,
-    min_pixels=MIN_PIXELS,
-    max_pixels=MAX_PIXELS,
-)
 storage_manager = StorageManager()
 pg_vector_manager = PGVector()
 job_executor_pool = JobExecutorPool(
-    pool_size=NUM_WORKERS, max_queue_size=JOB_QUEUE_MAX_SIZE
+    concurrent_job_limit=configs.NUM_WORKERS, max_queue_size=configs.JOB_QUEUE_MAX_SIZE
+)
+ocr_task_executor_pool = TaskExecutorPool(
+    concurrent_task_limit=configs.CONCURRENT_OCR_INFERENCE_TASK_LIMIT,
+    max_queue_size=configs.OCR_INFERENCE_TASK_QUEUE_MAX_SIZE,
+    name="OcrInferenceTask",
+)
+describe_picture_task_executor_pool = TaskExecutorPool(
+    concurrent_task_limit=configs.CONCURRENT_DESCRIBE_PICTURE_TASK_LIMIT,
+    max_queue_size=configs.DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE,
+    name="PictureDescriptionTask",
+)
+page_parser = PageParser(
+    ocr_inference_task_options=InferenceTaskOptions(
+        model_name="dotsocr",
+        model_host=configs.OCR_INFERENCE_HOST,
+        model_port=configs.OCR_INFERENCE_PORT,
+        temperature=0.1,
+        top_p=1.0,
+        max_completion_tokens=32768,
+        timeout=configs.API_TIMEOUT,
+    ),
+    describe_picture_task_options=InferenceTaskOptions(
+        model_name="InternVL3_5-2B",
+        model_host=configs.INTERN_VL_HOST,
+        model_port=configs.INTERN_VL_PORT,
+        temperature=0.1,
+        top_p=1.0,
+        max_completion_tokens=8192,
+        timeout=configs.API_TIMEOUT,
+    ),
+    parse_options=ParseOptions(
+        dpi=configs.DPI,
+        min_pixels=MIN_PIXELS,
+        max_pixels=MAX_PIXELS,
+        task_retry_count=configs.TASK_RETRY_COUNT,
+    ),
+    concurrency_limit=configs.CONCURRENT_OCR_TASK_LIMIT,
+)
+dots_parser = DotsOCRParser(
+    ocr_task_executor_pool=ocr_task_executor_pool,
+    describe_picture_task_executor_pool=describe_picture_task_executor_pool,
+    page_parser=page_parser,
 )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    os.makedirs(INPUT_DIR, exist_ok=True)
+    os.makedirs(configs.OUTPUT_DIR, exist_ok=True)
+    os.makedirs(configs.INPUT_DIR, exist_ok=True)
+
+    logger.remove(0)
+    logger.add(stderr, level="DEBUG")
 
     await pg_vector_manager.ensure_table_exists()
 
     job_executor_pool.start()
+    ocr_task_executor_pool.start()
+    describe_picture_task_executor_pool.start()
 
     yield
 
     job_executor_pool.stop()
-    pg_vector_manager.flush()
-    pg_vector_manager.close()
+    ocr_task_executor_pool.stop()
+    describe_picture_task_executor_pool.stop()
+    await pg_vector_manager.flush()
+    await pg_vector_manager.close()
 
 
 app = FastAPI(
@@ -96,15 +134,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
-
-def parse_s3_path(s3_path: str, is_s3):
-    if is_s3:
-        s3_path = s3_path.replace("s3://", "")
-    else:
-        s3_path = s3_path.replace("oss://", "")
-    bucket, *key_parts = s3_path.split("/")
-    return bucket, "/".join(key_parts)
 
 
 async def update_pgvector(job: JobResponseModel):
@@ -144,11 +173,6 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
     is_s3 = job_response.is_s3
 
     try:
-
-        file_bucket, file_key = parse_s3_path(input_s3_path, is_s3)
-        input_file_path = INPUT_DIR / file_bucket / file_key
-        input_file_path.parent.mkdir(parents=True, exist_ok=True)
-
         async with global_lock_manager:
             if input_s3_path not in processing_input_locks:
                 processing_input_locks[input_s3_path] = asyncio.Lock()
@@ -159,173 +183,170 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
 
         async with input_lock:
             async with output_lock:
-
-                # download file from S3
-                try:
-                    await storage_manager.download_file(
-                        bucket=file_bucket,
-                        key=file_key,
-                        local_path=str(input_file_path),
-                        is_s3=is_s3,
-                    )
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to download file from s3/oss: {str(e)}"
-                    ) from e
-
-                # compute MD5 hash of the input file
-                try:
-                    file_md5 = (
-                        job_response.job_id
-                        + ":"
-                        + compute_md5_file(str(input_file_path))
-                    )
-                    logging.info(
-                        "MD5 hash of input file %s: %s", input_s3_path, file_md5
-                    )
-                except Exception as e:
-                    logging.error(
-                        "Failed to compute MD5 hash for %s: %s", input_s3_path, e
-                    )
-                    raise RuntimeError(f"Failed to compute MD5 hash: {str(e)}") from e
-
                 # prepare local path
-                output_bucket, output_key = parse_s3_path(output_s3_path, is_s3)
-                output_file_name = output_s3_path.rstrip("/").rsplit("/", 1)[-1]
-                output_file_path = OUTPUT_DIR / output_bucket / output_key
-                output_md_path = output_file_path / output_file_name
-                output_json_path = output_md_path.with_suffix(".json")
-                output_md_nohf_path = output_md_path.with_name(
-                    output_md_path.stem + "_nohf"
-                ).with_suffix(".md")
-                output_md_path = output_md_path.with_suffix(".md")
-                output_md5_path = output_md_path.with_suffix(".md5")
-                output_md_path.parent.mkdir(parents=True, exist_ok=True)
-                output_file_path.mkdir(parents=True, exist_ok=True)
+                job_files = job_response.get_job_local_files()
+                job_files.input_file_path.parent.mkdir(parents=True, exist_ok=True)
+                job_files.output_md_path.parent.mkdir(parents=True, exist_ok=True)
+                job_files.output_dir_path.mkdir(parents=True, exist_ok=True)
 
+                download_input_from_s3 = True
+                md5_match = False
+
+                logger.debug(
+                    f"Checking existing remote files for job {job_response.job_id}"
+                )
                 # Check if 4 required files already exist in S3
                 md5_exists, all_files_exist = (
                     await storage_manager.check_existing_results_sync(
-                        bucket=output_bucket,
-                        prefix=f"{output_key}/{output_file_name}",
+                        bucket=job_files.remote_output_bucket,
+                        prefix=f"{job_files.remote_output_file_key}/{job_response.output_file_name}",
                         is_s3=is_s3,
                     )
                 )
 
-                # If so, download md5 file and compare hashes
-                if md5_exists:
+                # Try to reuse existing input if overwrite is disabled
+                if not job_response.overwrite and md5_exists:
+                    logger.debug(
+                        f"Downloading MD5 hash file for job {job_response.job_id}"
+                    )
+                    await storage_manager.download_file(
+                        bucket=job_files.remote_output_bucket,
+                        key=f"{job_files.remote_output_file_key}/{job_response.output_file_name}.md5",
+                        local_path=str(job_files.output_md5_path),
+                        is_s3=is_s3,
+                    )
+                    with open(job_files.output_md5_path, "r", encoding="utf-8") as f:
+                        existing_md5 = f.read().strip()
+
+                    # If input file already exists locally and overwrite is not set,
+                    # skip downloading if md5 matches
+                    if job_files.input_file_path.exists():
+                        file_md5 = f"{job_response.job_id}:" + compute_md5_file(
+                            str(job_files.input_file_path)
+                        )
+                        if file_md5 == existing_md5:
+                            download_input_from_s3 = False
+                            md5_match = True
+
+                # download file from S3
+                if download_input_from_s3:
                     try:
+                        logger.debug(
+                            f"Downloading input S3 file for job {job_response.job_id}"
+                        )
                         await storage_manager.download_file(
-                            bucket=output_bucket,
-                            key=f"{output_key}/{output_file_name}.md5",
-                            local_path=str(output_md5_path),
+                            bucket=job_files.remote_input_bucket,
+                            key=job_files.remote_input_file_key,
+                            local_path=str(job_files.input_file_path),
                             is_s3=is_s3,
                         )
-                        with open(output_md5_path, "r", encoding="utf-8") as f:
-                            existing_md5 = f.read().strip()
-                        if existing_md5 == file_md5 and not job_response.overwrite:
-                            if all_files_exist:
-                                logging.info(
-                                    "Output files already exist in S3 and MD5 matches for %s. Skipping processing.",
-                                    input_s3_path,
-                                )
-                                job_response.json_url = (
-                                    f"{output_s3_path}/{output_file_name}.json"
-                                )
-                                job_response.md_url = (
-                                    f"{output_s3_path}/{output_file_name}.md"
-                                )
-                                job_response.md_nohf_url = (
-                                    f"{output_s3_path}/{output_file_name}_nohf.md"
-                                )
-                                job_response.page_prefix = (
-                                    f"{output_s3_path}/{output_file_name}_page_"
-                                )
-                                skip_response = {
-                                    "success": True,
-                                    "total_pages": 0,
-                                    "output_s3_path": output_s3_path,
-                                    "message": "Output files already exist and MD5 matches. Skipped processing.",
-                                }
-                                yield json.dumps(skip_response) + "\n"
-                                return
-                            logger.info(
-                                f"MD5 matches for {input_s3_path}, but some output files are missing. Reprocessing the file.",
-                            )
-                        else:
-                            # clean the whole output directory in S3
-                            # print(f"Cleaning output directory in S3: {output_bucket}/{output_key}/")
-                            # await storage_manager.delete_files_in_directory(output_bucket, f"{output_key}/", is_s3)
-                            logger.info(
-                                f"MD5 mismatch for {input_s3_path} or overwrite is set true. Reprocessing the file."
-                            )
                     except Exception as e:
-                        logging.warning(
-                            "Failed to verify existing MD5 hash for %s: %s. Reprocessing the file.",
-                            input_s3_path,
-                            e,
+                        raise RuntimeError(
+                            f"Failed to download file from s3/oss: {str(e)}"
+                        ) from e
+
+                    # compute MD5 hash of the input file
+                    try:
+                        file_md5 = (
+                            job_response.job_id
+                            + ":"
+                            + compute_md5_file(str(job_files.input_file_path))
                         )
-                else:
-                    # clean the whole output directory in S3 for safety
-                    # print(f"Cleaning output directory in S3: {output_bucket}/{output_key}/")
-                    # logging.info(f"No MD5 hash found for {input_s3_path}. Cleaning output directory.")
-                    # await storage_manager.delete_files_in_directory(output_bucket, f"{output_key}/", is_s3)
+                        logging.info(
+                            "MD5 hash of input file %s: %s", input_s3_path, file_md5
+                        )
+                        if not job_response.overwrite:
+                            md5_match = md5_exists and file_md5 == existing_md5
+                    except Exception as e:
+                        logging.error(
+                            "Failed to compute MD5 hash for %s: %s", input_s3_path, e
+                        )
+                        raise RuntimeError(
+                            f"Failed to compute MD5 hash: {str(e)}"
+                        ) from e
+
+                # If overwrite is disabled and md5 matches, try to reuse existing output
+                if not job_response.overwrite and md5_match and all_files_exist:
                     logging.info(
-                        "No MD5 hash found for %s. Reprocessing the file.",
+                        "Output files already exist in S3 and MD5 matches for %s. "
+                        "Skipping processing.",
                         input_s3_path,
                     )
+                    skip_response = {
+                        "success": True,
+                        "total_pages": 0,
+                        "output_s3_path": output_s3_path,
+                        "message": "Output files already exist and MD5 matches."
+                        " Skipped processing.",
+                    }
+                    yield skip_response
+                    return
+
+                if md5_exists or all_files_exist:
+                    logger.info(
+                        f"Reprocessing {input_s3_path}. "
+                        f"md5 exists {md5_exists}, all files exist {all_files_exist}",
+                        f" overwrite {job_response.overwrite}, md5 match {md5_match}.",
+                    )
+                # clean the whole output directory in S3 for safety
+                # logging.info(
+                #     f"No MD5 hash found for {input_s3_path}. "
+                #     f"Cleaning output directory {job_local_files.remote_output_bucket}/{output_key}/."
+                # )
+                # await storage_manager.delete_files_in_directory(
+                #     job_local_files.remote_output_bucket, f"{output_key}/", is_s3
+                # )
 
                 # Mismatch or no existing MD5 hash found, save new MD5 hash to a file
-                with open(output_md5_path, "w", encoding="utf-8") as f:
-                    f.write(file_md5)
-                logging.info("Saved MD5 hash to %s", output_md5_path)
+                # TODO(tatiana): use put_object API to directly write the data to S3/OSS
+                # without extra IO to disk.
+                if not md5_match:
+                    with open(job_files.output_md5_path, "w", encoding="utf-8") as f:
+                        f.write(file_md5)
+                    logging.info("Saved MD5 hash to %s", job_files.output_md5_path)
 
-                # Upload MD5 hash file to S3/OSS
-                try:
-                    await storage_manager.upload_file(
-                        output_bucket,
-                        f"{output_key}/{output_file_name}.md5",
-                        str(output_md5_path),
-                        is_s3,
-                    )
-                except Exception as e:
-                    logging.warning("Failed to upload MD5 hash file to s3/oss: %s", e)
-
-                # print(output_bucket, output_key)
-                # print(output_file_name)
-                # print(output_file_path)
-                # print(output_md_path)
-
-                job_response.json_url = f"{output_s3_path}/{output_file_name}.json"
-                job_response.md_url = f"{output_s3_path}/{output_file_name}.md"
-                job_response.md_nohf_url = (
-                    f"{output_s3_path}/{output_file_name}_nohf.md"
-                )
-                job_response.page_prefix = f"{output_s3_path}/{output_file_name}_page_"
+                    # Upload MD5 hash file to S3/OSS
+                    try:
+                        await storage_manager.upload_file(
+                            job_files.remote_output_bucket,
+                            f"{job_files.remote_output_file_key}/{job_files.output_file_name}.md5",
+                            str(job_files.output_md5_path),
+                            is_s3,
+                        )
+                    except Exception as e:
+                        logging.warning(
+                            "Failed to upload MD5 hash file to s3/oss: %s", e
+                        )
 
                 # parse the PDF file and upload each page's output files
                 all_paths_to_upload = []
 
                 try:
                     if job_response.parse_type == "image":
-                        result = await dots_parser.parse_image(
-                            input_path=str(input_file_path),
-                            filename=output_file_name,
-                            prompt_mode=job_response.prompt_mode,
-                            save_dir=output_file_path,
-                            fitz_preprocess=job_response.fitz_preprocess,
-                            describe_picture=job_response.describe_picture,
-                        )
+                        result = await dots_parser.parse_image(job_response)
                         all_paths_to_upload.append(result)
                     else:
-                        async for result in dots_parser.parse_pdf_stream(
-                            input_path=input_file_path,
-                            filename=Path(input_file_path).stem,
-                            prompt_mode=job_response.prompt_mode,
-                            save_dir=output_file_path,
-                            rebuild_directory=job_response.rebuild_directory,
-                            describe_picture=job_response.describe_picture,
+                        total_count = 0
+                        failed_count = 0
+                        async for result, status in dots_parser.schedule_pdf_tasks(
+                            job_response
                         ):
+                            total_count += 1
+                            if status in ["fallback", "failed"]:
+                                # TODO(tatiana): save failed/fallback task to OCRTable and
+                                # allow partial rerun after fix?
+                                pass
+                            if status == "failed":
+                                failed_count += 1
+                                page_response = {
+                                    "success": False,
+                                    "message": "parse failed",
+                                    "page_no": result.get("page_no", -1),
+                                    "uploaded_files": [],
+                                }
+                                yield page_response
+                                continue
+
                             page_no = result.get("page_no", -1)
 
                             page_upload_tasks = []
@@ -337,10 +358,13 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                             for file_type, local_path in paths_to_upload.items():
                                 if local_path:
                                     file_name = Path(local_path).name
-                                    s3_key = f"{output_key}/{file_name}"
+                                    s3_key = f"{job_files.remote_output_file_key}/{file_name}"
                                     task = asyncio.create_task(
                                         storage_manager.upload_file(
-                                            output_bucket, s3_key, local_path, is_s3
+                                            job_files.remote_output_bucket,
+                                            s3_key,
+                                            local_path,
+                                            is_s3,
                                         )
                                     )
                                     page_upload_tasks.append(task)
@@ -358,21 +382,31 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                     path for path in uploaded_paths_for_page if path
                                 ],
                             }
-                            yield json.dumps(page_response) + "\n"
+                            yield page_response
                 except Exception as e:
-                    logging.error("Error during parsing pages: %s", e)
+                    logging.error("Error during parsing pages: %s", e, exc_info=True)
+                    raise
 
                 if job_response.parse_type == "pdf":
+                    if failed_count / total_count > configs.TASK_FAIL_THRESHOLD:
+                        final_response = {
+                            "success": False,
+                            "total_pages": total_count,
+                            "output_s3_path": output_s3_path,
+                            "detail": f"Failed to parse {failed_count} pages "
+                            f"out of {total_count} pages.",
+                        }
+                        yield final_response
+                        return
                     # combine all page to upload
                     all_paths_to_upload.sort(key=lambda item: item["page_no"])
                     output_files = {}
                     try:
-                        output_files["md"] = open(output_md_path, "w", encoding="utf-8")
-                        output_files["json"] = open(
-                            output_json_path, "w", encoding="utf-8"
+                        output_files["md"] = open(
+                            job_files.output_md_path, "w", encoding="utf-8"
                         )
                         output_files["md_nohf"] = open(
-                            output_md_nohf_path, "w", encoding="utf-8"
+                            job_files.output_md_nohf_path, "w", encoding="utf-8"
                         )
                         all_json_data = []
                         for p in all_paths_to_upload:
@@ -387,8 +421,8 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                         data = {"page_no": page_no, **data}
                                         all_json_data.append(data)
                                     except Exception as e:
-                                        print(
-                                            f"WARNING: Failed to read layout info file {local_path}: {str(e)}"
+                                        logger.warning(
+                                            f"Failed to read layout info file {local_path}: {str(e)}"
                                         )
                                         all_json_data.append({"page_no": page_no})
                                 else:
@@ -400,15 +434,18 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                         output_files[file_type].write(file_content)
                                         output_files[file_type].write("\n\n")
                                     except Exception as e:
-                                        print(
-                                            f"WARNING: Failed to read {file_type} file {local_path}: {str(e)}"
+                                        logger.warning(
+                                            f"Failed to read {file_type} file {local_path}: {str(e)}"
                                         )
-                        json.dump(
-                            all_json_data,
-                            output_files["json"],
-                            indent=4,
-                            ensure_ascii=False,
-                        )
+                        with open(
+                            job_files.output_json_path, "w", encoding="utf-8"
+                        ) as json_output:
+                            json.dump(
+                                all_json_data,
+                                json_output,
+                                indent=4,
+                                ensure_ascii=False,
+                            )
                     finally:
                         # Ensure all file handles are properly closed
                         for file_handle in output_files.values():
@@ -416,21 +453,21 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 file_handle.close()
 
                 await storage_manager.upload_file(
-                    output_bucket,
-                    f"{output_key}/{output_file_name}.md",
-                    str(output_md_path),
+                    job_files.remote_output_bucket,
+                    f"{job_files.remote_output_file_key}/{job_files.output_file_name}.md",
+                    str(job_files.output_md_path),
                     is_s3,
                 )
                 await storage_manager.upload_file(
-                    output_bucket,
-                    f"{output_key}/{output_file_name}_nohf.md",
-                    str(output_md_nohf_path),
+                    job_files.remote_output_bucket,
+                    f"{job_files.remote_output_file_key}/{job_files.output_file_name}_nohf.md",
+                    str(job_files.output_md_nohf_path),
                     is_s3,
                 )
                 await storage_manager.upload_file(
-                    output_bucket,
-                    f"{output_key}/{output_file_name}.json",
-                    str(output_json_path),
+                    job_files.remote_output_bucket,
+                    f"{job_files.remote_output_file_key}/{job_files.output_file_name}.json",
+                    str(job_files.output_json_path),
                     is_s3,
                 )
 
@@ -439,37 +476,31 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                     "total_pages": len(all_paths_to_upload),
                     "output_s3_path": output_s3_path,
                 }
-                yield json.dumps(final_response) + "\n"
+                yield final_response
 
     except Exception as e:
         error_msg = json.dumps({"success": False, "detail": str(e)})
         yield error_msg + "\n"
 
 
-@retry(
-    stop=stop_after_attempt(RETRY_TIMES),
-    wait=wait_exponential(multiplier=1, min=2, max=60),
-    before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
-    reraise=True,
-)
-async def attempt_to_process_job(job: JobResponseModel):
-    attempt_num = attempt_to_process_job.retry.statistics.get("attempt_number", 0) + 1
-    if attempt_num == 1:
-        job.status = "processing"
-        await update_pgvector(job)
-    else:
-        job.status = "retrying"
-        await update_pgvector(job)
-    job.message = f"Processing job, attempt number: {attempt_num}"
+async def run_job(job: JobResponseModel):
+    job.status = "processing"
+    job.message = "Processing job"
+    await update_pgvector(job)
 
-    try:
-        async for _ in stream_and_upload_generator(job):
+    async for page_result in stream_and_upload_generator(job):
+        if "page_no" in page_result:
+            # TODO(tatiana): page result not used
             pass
-    except Exception as e:
-        logging.error(
-            "Job %s failed on attempt %s with error: %s", job.job_id, attempt_num, e
-        )
-        raise
+        elif not page_result.get("success", False):
+            logger.error(
+                f"Job {job.job_id} failed with: {page_result.get('detail', 'error')}"
+            )
+            raise RuntimeError(
+                f"Job {job.job_id} failed with: {page_result.get('detail', 'error')}"
+            )
+
+    logger.success(f"Job {job.job_id} successfully processed.")
 
 
 @app.post("/parse/file")
@@ -495,10 +526,12 @@ async def parse_file(
     if file_ext not in supported_formats:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file format. Supported formats are: {', '.join(supported_formats)}",
+            detail="Unsupported file format. "
+            f"Supported formats are: {', '.join(supported_formats)}",
         )
 
-    # Current logic: only if input, output, knowledgebaseId, workspaceId are all the same, we consider it as the same job, and add job_id to the md5 file
+    # Current logic: only if input, output, knowledgebaseId, workspaceId are all the same,
+    # we consider it as the same job, and add job_id to the md5 file
     ocr_job_id = "job-" + compute_md5_string(
         f"{input_s3_path}_{output_s3_path}_{knowledgebase_id}_{workspace_id}"
     )
@@ -550,7 +583,7 @@ async def parse_file(
     await job_executor_pool.add_job(
         Job(
             job_response,
-            execute=attempt_to_process_job,
+            execute=run_job,
             on_status_change=update_pgvector,
         )
     )
@@ -582,7 +615,7 @@ async def parse_file_old(**kwargs):
 async def health_check():
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(TARGET_URL, timeout=5.0)
+            response = await client.get(configs.OCR_HEALTH_CHECK_URL, timeout=5.0)
 
         headers_to_exclude = {
             "content-encoding",

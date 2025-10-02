@@ -1,10 +1,52 @@
 import asyncio
 from datetime import datetime
-from typing import Awaitable, Callable, Dict, List
+from typing import Awaitable, Callable, Dict, List, Literal
 
-from app.utils.pg_vector import JobStatusType, OCRTable
 from loguru import logger
 from pydantic import BaseModel
+
+from app.utils.pg_vector import JobStatusType, OCRTable
+from app.utils.storage import parse_s3_path
+from app.utils import configs
+
+
+class JobLocalFiles(BaseModel):
+    remote_input_bucket: str
+    remote_input_file_key: str
+
+    remote_output_bucket: str
+    remote_output_file_key: str
+
+    output_file_name: str
+
+    @property
+    def input_file_path(self):
+        return configs.INPUT_DIR / self.remote_input_bucket / self.remote_input_file_key
+
+    @property
+    def output_dir_path(self):
+        return (
+            configs.OUTPUT_DIR / self.remote_output_bucket / self.remote_output_file_key
+        )
+
+    @property
+    def output_json_path(self):
+        output_file_path = self.output_dir_path / self.output_file_name
+        return output_file_path.with_suffix(".json")
+
+    @property
+    def output_md_path(self):
+        output_file_path = self.output_dir_path / self.output_file_name
+        return output_file_path.with_suffix(".md")
+
+    @property
+    def output_md_nohf_path(self):
+        return self.output_dir_path / f"{self.output_file_name}_nohf.md"
+
+    @property
+    def output_md5_path(self):
+        output_file_path = self.output_dir_path / self.output_file_name
+        return output_file_path.with_suffix(".md5")
 
 
 class JobResponseModel(BaseModel):
@@ -17,21 +59,55 @@ class JobResponseModel(BaseModel):
     workspace_id: str
     status: JobStatusType
     message: str
-    is_s3: bool = True
-    parse_type: str = "pdf"
+    parse_type: Literal["pdf", "image"] = "pdf"
 
+    is_s3: bool = True
     input_s3_path: str
     output_s3_path: str
-    page_prefix: str = None
-    json_url: str = None
-    md_url: str = None
-    md_nohf_url: str = None
 
     prompt_mode: str = "prompt_layout_all_en"
     fitz_preprocess: bool = False
     rebuild_directory: bool = False
     describe_picture: bool = False
     overwrite: bool = False
+
+    _job_local_files: JobLocalFiles = None
+
+    def get_job_local_files(self):
+        if self._job_local_files is None:
+            input_bucket, input_file_key = parse_s3_path(self.input_s3_path, self.is_s3)
+            output_bucket, output_file_key = parse_s3_path(
+                self.output_s3_path, self.is_s3
+            )
+            output_file_name = self.output_s3_path.rstrip("/").rsplit("/", 1)[-1]
+            self._job_local_files = JobLocalFiles(
+                remote_input_bucket=input_bucket,
+                remote_input_file_key=input_file_key,
+                remote_output_bucket=output_bucket,
+                remote_output_file_key=output_file_key,
+                output_file_name=output_file_name,
+            )
+        return self._job_local_files
+
+    @property
+    def output_file_name(self):
+        return self.get_job_local_files().output_file_name
+
+    @property
+    def json_url(self):
+        return f"{self.output_s3_path}/{self.output_file_name}.json"
+
+    @property
+    def md_url(self):
+        return f"{self.output_s3_path}/{self.output_file_name}.md"
+
+    @property
+    def md_nohf_url(self):
+        return f"{self.output_s3_path}/{self.output_file_name}_nohf.md"
+
+    @property
+    def page_prefix(self):
+        return f"{self.output_s3_path}/{self.output_file_name}_page_"
 
     def transform_to_map(self):
         mapping = {
@@ -60,7 +136,7 @@ class JobResponseModel(BaseModel):
 
 class Job:
     """
-    Not thread-safe.  Separate job states from job execution.
+    Not thread-safe. Separate job states from job execution.
     - Job states are stored in JobResponseModel and requires persistence.
     - Job execution logic is implemented in this class.
     """
@@ -79,19 +155,17 @@ class Job:
     async def process(self):
         # TODO(tatiana): handle the cancellation logic here. Now just do a trivial cancellation.
         if self._cancel_requested:
-            logger.info("Job %s is cancelled.", self.job_response.job_id)
+            logger.info(f"Job {self.job_response.job_id} is cancelled.")
             await self._set_cancelled()
             return
 
         try:
             await self._execute(self.job_response)
-            logger.success("Job %s successfully processed.", self.job_response.job_id)
+            logger.success(f"Job {self.job_response.job_id} successfully processed.")
             await self._set_finished()
         except Exception as e:
             logger.error(
-                "Job %s failed. Final error: %s",
-                self.job_response.job_id,
-                e,
+                f"Job {self.job_response.job_id} failed. Final error: {e}",
                 exc_info=True,
             )
             await self._set_failed(e)
@@ -126,21 +200,21 @@ class Job:
         await self._on_status_change(self.job_response)
 
 
+# TODO(tatiana): Make jobs run in parallel?
 # TODO(tatiana): failure recovery. recover job from persistent storage
 class JobExecutorPool(BaseModel):
     max_queue_size: int = 4
-    pool_size: int = 4
-    job_retry_times: int = 3
+    concurrent_job_limit: int = 4
 
     _workers: List[asyncio.Task] = []
     _job_queue: asyncio.Queue = None
     _job_dict: Dict[str, Job] = {}
 
     def start(self):
-        logger.info("Starting up %s workers...", self.pool_size)
+        logger.info(f"Starting up {self.concurrent_job_limit} workers...")
         self._job_queue = asyncio.Queue(self.max_queue_size)
 
-        for i in range(self.pool_size):
+        for i in range(self.concurrent_job_limit):
             task = asyncio.create_task(self._worker_loop(f"Worker-{i}"))
             self._workers.append(task)
 
@@ -169,7 +243,7 @@ class JobExecutorPool(BaseModel):
             job.cancel()
 
     async def _worker_loop(self, worker_id: str):
-        logger.info(f"{worker_id} started")
+        logger.debug(f"{worker_id} started")
         while True:
             try:
                 job_id = await self._job_queue.get()
@@ -179,19 +253,18 @@ class JobExecutorPool(BaseModel):
                 # to self.job_response_dict
                 if not job:
                     logger.error(
-                        "%s: Job ID '%s' found in queue but not in JobResponseDict."
-                        " Discarding task.",
-                        worker_id,
-                        job_id,
+                        f"Worker {worker_id}: Job ID '{job_id}' found in queue "
+                        "but not in JobResponseDict. Discarding task."
                     )
                     self._job_queue.task_done()
                     continue
 
                 await job.process()
                 self._job_queue.task_done()
+                self._job_dict.pop(job_id)
 
             except asyncio.CancelledError:
-                logger.info("Worker %s is shutting down.", worker_id)
+                logger.info(f"{worker_id} is shutting down.")
                 break
             except Exception as e:
-                logger.error("Unexpected error in worker %s: %s", worker_id, e)
+                logger.error(f"Unexpected error in {worker_id}: {e}")

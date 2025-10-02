@@ -2,11 +2,19 @@ import asyncio
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
-import httpx
+from fitz import Page
+from PIL import Image
+from pydantic import BaseModel
 
-from dots_ocr.model.inference import inference_with_vllm
+from dots_ocr.model.inference import (
+    InferenceTask,
+    InferenceTaskOptions,
+    OcrInferenceTask,
+)
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
+from dots_ocr.utils.doc_utils import fitz_doc_to_image
 from dots_ocr.utils.format_transformer import layoutjson2md
 from dots_ocr.utils.image_utils import fetch_image, get_image_by_fitz_doc
 from dots_ocr.utils.layout_utils import (
@@ -17,6 +25,13 @@ from dots_ocr.utils.layout_utils import (
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
 
 
+class ParseOptions(BaseModel):
+    dpi: int = 200
+    min_pixels: int = None
+    max_pixels: int = None
+    task_retry_count: int = 3
+
+
 class PageParser:
     """
     Asynchronous parser for image or PDF files.
@@ -24,70 +39,89 @@ class PageParser:
 
     def __init__(
         self,
-        ip="localhost",
-        port=8000,
-        model_name="dotsocr",
-        temperature=0.1,
-        top_p=1.0,
-        max_completion_tokens=32768,
+        ocr_inference_task_options: InferenceTaskOptions = None,
+        describe_picture_task_options: InferenceTaskOptions = None,
+        parse_options: ParseOptions = None,
         concurrency_limit=8,
-        dpi=200,
-        min_pixels=None,
-        max_pixels=None,
     ):
-        self.dpi = dpi
-        self.ip = ip
-        self.port = port
-        self.model_name = model_name
-        self.temperature = temperature
-        self.top_p = top_p
-        self.max_completion_tokens = max_completion_tokens
-        self.min_pixels = min_pixels
-        self.max_pixels = max_pixels
+        assert (
+            parse_options.min_pixels is None or parse_options.min_pixels >= MIN_PIXELS
+        )
+        assert (
+            parse_options.max_pixels is None or parse_options.max_pixels <= MAX_PIXELS
+        )
+        self._image_options = parse_options
+        if self._image_options is None:
+            self._image_options = ParseOptions()
+
+        self._ocr_inference_task_options = ocr_inference_task_options
+        self._describe_picture_task_options = describe_picture_task_options
+        if self._ocr_inference_task_options is None:
+            self._ocr_inference_task_options = InferenceTaskOptions(
+                model_name="dotsocr",
+                model_host="localhost",
+                model_port=8000,
+                temperature=0.1,
+                top_p=1.0,
+                max_completion_tokens=32768,
+                timeout=10,
+            )
+        if self._describe_picture_task_options is None:
+            self._describe_picture_task_options = InferenceTaskOptions(
+                model_name="InternVL3_5-2B",
+                model_host="internvl3-5",
+                model_port=6008,
+                temperature=0.1,
+                top_p=1.0,
+                max_completion_tokens=8192,
+                timeout=10,
+            )
+
         self.concurrency_limit = concurrency_limit
         self.semaphore = asyncio.Semaphore(self.concurrency_limit)
-        self.http_client = httpx.AsyncClient(timeout=300.0)
         self.cpu_executor = ThreadPoolExecutor(max_workers=os.cpu_count())
 
-        print(
-            f"Async parser initialized with concurrency limit: {self.concurrency_limit}"
-        )
-        assert self.min_pixels is None or self.min_pixels >= MIN_PIXELS
-        assert self.max_pixels is None or self.max_pixels <= MAX_PIXELS
+    @property
+    def page_retry_number(self):
+        return self._image_options.task_retry_count
 
-    async def _inference_with_vllm(self, image, prompt):
-        response = await inference_with_vllm(
-            image,
-            prompt,
-            model_name=self.model_name,
-            ip=self.ip,
-            port=self.port,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            max_completion_tokens=self.max_completion_tokens,
-        )
-        return response
+    @property
+    def ocr_inference_task_options(self):
+        return self._ocr_inference_task_options
 
-    async def _inference_with_vllm_internVL(
+    @property
+    def describe_picture_task_options(self):
+        return self._describe_picture_task_options
+
+    @property
+    def dpi(self):
+        return self._image_options.dpi
+
+    @property
+    def min_pixels(self):
+        return self._image_options.min_pixels
+
+    @property
+    def max_pixels(self):
+        return self._image_options.max_pixels
+
+    @property
+    def picture_description_prompt(self) -> str:
+        return (
+            "Extract the information from this image objectively. "
+            "Don't omit a single detail. "
+            "Do not provide extra analysis. "
+            "If the image is one or multiple charts, after output the extracted information, "
+            "also return the extracted data in one or multiple clean markdown table format. "
+            "The table should include appropriate headers and rows matching the chart data. "
+            "If it is not a chart, just output the extracted information."
+        )
+
+    def prepare_image(
         self,
-        image,
-        prompt="extract the information from this image objectively. if the the image is chart, build a table or tables in Markdown Format after extract information",
-    ):
-        response = await inference_with_vllm(
-            image,
-            prompt,
-            model_name="InternVL3_5-2B",
-            ip="internvl3-5",
-            port=6008,
-            temperature=0.1,
-            top_p=1.0,
-            max_completion_tokens=8192,
-        )
-        # print(response)
-        return response
-
-    def _prepare_image_and_prompt(
-        self, origin_image, prompt_mode, source, fitz_preprocess, bbox
+        origin_image: Image.Image,
+        source: Literal["image", "pdf"],
+        fitz_preprocess=False,
     ):
         """Synchronous, CPU-bound part of image preparation."""
         scale_factor = 1.0
@@ -98,11 +132,15 @@ class PageParser:
             image = fetch_image(
                 image, min_pixels=self.min_pixels, max_pixels=self.max_pixels
             )
-        else:
-            image = fetch_image(
-                origin_image, min_pixels=self.min_pixels, max_pixels=self.max_pixels
-            )
+            return image, scale_factor
+        image = fetch_image(
+            origin_image, min_pixels=self.min_pixels, max_pixels=self.max_pixels
+        )
+        return image, scale_factor
 
+    def prepare_ocr_prompt(
+        self, origin_image: Image.Image, image: Image.Image, prompt_mode: str, bbox=None
+    ):
         prompt = dict_promptmode_to_prompt[prompt_mode]
         if prompt_mode == "prompt_grounding_ocr":
             assert bbox is not None
@@ -110,12 +148,20 @@ class PageParser:
                 origin_image, [bbox], input_width=image.width, input_height=image.height
             )[0]
             prompt += str(bbox)
+        return prompt
+
+    def prepare_image_and_prompt(
+        self, origin_image, prompt_mode, source, fitz_preprocess=False, bbox=None
+    ):
+        """Synchronous, CPU-bound part of image preparation."""
+        image, scale_factor = self.prepare_image(origin_image, source, fitz_preprocess)
+        prompt = self.prepare_ocr_prompt(origin_image, image, prompt_mode, bbox)
 
         return (
             image,
             prompt,
             scale_factor,
-        )  # only image withe fitz_preprocess will receive scale_factor for use
+        )  # only image with fitz_preprocess will receive scale_factor for use
 
     def _process_and_save_results(
         self,
@@ -178,7 +224,7 @@ class PageParser:
             cells_with_size["page_no"] = page_idx
         return cells_with_size
 
-    async def _save_results(
+    async def save_results(
         self, cells_with_size, save_dir, save_name, image_origin, scale_factor=1.0
     ):
 
@@ -217,6 +263,18 @@ class PageParser:
 
         return result
 
+    async def _inference_with_vllm(self, image, prompt):
+        task = OcrInferenceTask(
+            self._ocr_inference_task_options, "ocr_inference_task", image, prompt
+        )
+        return await task.inference_with_vllm()
+
+    async def _inference_with_vllm_intern_vl(self, image, prompt):
+        task = InferenceTask(
+            self._describe_picture_task_options, "describe_picture_task", image, prompt
+        )
+        return await task.inference_with_vllm()
+
     async def _parse_single_image(
         self,
         origin_image,
@@ -236,7 +294,7 @@ class PageParser:
             # 1. Run CPU-bound image prep in executor
             image, prompt, _ = await loop.run_in_executor(
                 self.cpu_executor,
-                self._prepare_image_and_prompt,
+                self.prepare_image_and_prompt,
                 origin_image,
                 prompt_mode,
                 source,
@@ -247,40 +305,56 @@ class PageParser:
             response = await self._inference_with_vllm(image, prompt)
 
             # 3. Run CPU/IO-bound post-processing and saving in executor
-            if (
-                save_dir is None
-            ):  # do not save, just return cells for further processing
-                cells = await loop.run_in_executor(
-                    self.cpu_executor,
-                    self._process_results,
-                    response,
-                    prompt_mode,
-                    origin_image,
-                    image,
-                    page_idx,
-                )
-                return cells
-            else:
-                save_name_page = (
-                    f"{save_name}_page_{page_idx}" if source == "pdf" else save_name
-                )
-                result = await loop.run_in_executor(
-                    self.cpu_executor,
-                    self._process_and_save_results,
-                    response,
-                    prompt_mode,
-                    save_dir,
-                    save_name_page,
-                    origin_image,
-                    image,
-                    scale_factor,
-                )
+            cells = await self.process_results(
+                save_dir,
+                (f"{save_name}_page_{page_idx}" if source == "pdf" else save_name),
+                response,
+                prompt_mode,
+                origin_image,
+                image,
+                page_idx,
+                scale_factor,
+            )
+            return cells
 
-                result["page_no"] = page_idx
-                return result
+    async def process_results(
+        self,
+        save_dir,
+        save_name,
+        response,
+        prompt_mode,
+        origin_image,
+        image,
+        page_idx,
+        scale_factor,
+    ):
+        loop = asyncio.get_running_loop()
+        if save_dir is None:  # do not save, just return cells for further processing
+            return await loop.run_in_executor(
+                self.cpu_executor,
+                self._process_results,
+                response,
+                prompt_mode,
+                origin_image,
+                image,
+                page_idx,
+            )
+
+        result = await loop.run_in_executor(
+            self.cpu_executor,
+            self._process_and_save_results,
+            response,
+            prompt_mode,
+            save_dir,
+            save_name,
+            origin_image,
+            image,
+            scale_factor,
+        )
+        result["page_no"] = page_idx
+        return result
 
     async def _describe_picture_in_single_page(self, origin_image, cells):
-
         picture_blocks = [
             info_block
             for info_block in cells["full_layout_info"]
@@ -296,18 +370,60 @@ class PageParser:
             async with self.semaphore:  # Use the existing semaphore from PageParser
                 x0, y0, x1, y1 = info_block["bbox"]
                 cropped_img = origin_image.crop((x0, y0, x1, y1))
-                prompt = (
-                    "Extract the information from this image objectively."
-                    "Don't omit a single detail."
-                    "Do not provide extra analysis."
-                    "If the image is one or multiple charts, after output the extracted information, "
-                    "also return the extracted data in one or multiple clean markdown table format. "
-                    "The table should include appropriate headers and rows matching the chart data. "
-                    "If it is not a chart, just output the extracted information."
+                response = await self._inference_with_vllm_intern_vl(
+                    cropped_img, self.picture_description_prompt
                 )
-                response = await self._inference_with_vllm_internVL(cropped_img, prompt)
                 info_block["text"] = response.strip()
 
         # Process all pictures concurrently
         tasks = [process_picture_block(block) for block in picture_blocks]
         await asyncio.gather(*tasks)
+
+    def _prepare_image_for_ocr(
+        self,
+        input_path: str,
+        prompt_mode: str,
+        fitz_preprocess=False,
+        bbox=None,
+        source="image",
+    ):
+        origin_image = fetch_image(input_path)
+        image, scale_factor = self.prepare_image(origin_image, source, fitz_preprocess)
+        prompt = self.prepare_ocr_prompt(origin_image, image, prompt_mode, bbox)
+        return image, prompt, scale_factor
+
+    async def prepare_image_for_ocr(
+        self,
+        input_path: str,
+        prompt_mode: str,
+        fitz_preprocess=False,
+        bbox=None,
+        source="image",
+    ):
+        """Wrapped in thread pool due to blocking IO operations."""
+        loop = asyncio.get_running_loop()
+        image, prompt, scale_factor = await loop.run_in_executor(
+            self.cpu_executor,
+            self._prepare_image_for_ocr,
+            input_path,
+            prompt_mode,
+            fitz_preprocess,
+            bbox,
+            source,
+        )
+        return image, prompt, scale_factor
+
+    def prepare_pdf_page(self, page: Page, prompt_mode: str, bbox=None):
+        """Synchronous, CPU-bound part of image preparation."""
+        origin_image, scale_factor = fitz_doc_to_image(page, target_dpi=self.dpi)
+        image, _ = self.prepare_image(origin_image, "pdf")
+        prompt = self.prepare_ocr_prompt(origin_image, image, prompt_mode, bbox=bbox)
+
+        return origin_image, image, prompt, scale_factor
+
+    def iter_picture_blocks(self, cells: dict, origin_image: Image.Image):
+        for info_block in cells["full_layout_info"]:
+            if info_block["category"] == "Picture":
+                x0, y0, x1, y1 = info_block["bbox"]
+                cropped_img = origin_image.crop((x0, y0, x1, y1))
+                yield info_block, cropped_img
