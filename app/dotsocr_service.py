@@ -98,6 +98,7 @@ class JobResponseModel(BaseModel):
     status: Literal["pending", "retrying", "processing", "completed", "failed", "canceled"] # canceled havn't implemented
     message: str
     is_s3: bool = True
+    parse_type: str = "pdf"
 
     input_s3_path: str
     output_s3_path: str
@@ -297,41 +298,52 @@ async def stream_and_upload_generator(
                 all_paths_to_upload = []
 
                 try:
-                    async for result in dots_parser.parse_pdf_stream(
-                        input_path=input_file_path,
-                        filename=Path(input_file_path).stem,
-                        prompt_mode=JobResponse.prompt_mode,
-                        save_dir=output_file_path,
-                        rebuild_directory=JobResponse.rebuild_directory,
-                        describe_picture=JobResponse.describe_picture
-                    ):
-                        page_no = result.get('page_no', -1)
-                        
-                        page_upload_tasks = []
-                        paths_to_upload = {
-                            'md': result.get('md_content_path'),
-                            'md_nohf': result.get('md_content_nohf_path'),
-                            'json': result.get('layout_info_path')
-                        }
-                        for file_type, local_path in paths_to_upload.items():
-                            if local_path:
-                                file_name = Path(local_path).name
-                                s3_key = f"{output_key}/{file_name}"
-                                task = asyncio.create_task(
-                                    storage_manager.upload_file(output_bucket, s3_key, local_path, is_s3)
-                                )
-                                page_upload_tasks.append(task)
-                        uploaded_paths_for_page = await asyncio.gather(*page_upload_tasks)                    
+                    if JobResponse.parse_type == "image":
+                        result = await dots_parser.parse_image(
+                            input_path=str(input_file_path),
+                            filename=output_file_name,
+                            prompt_mode=JobResponse.prompt_mode,
+                            save_dir=output_file_path,
+                            fitz_preprocess=JobResponse.fitz_preprocess,
+                            describe_picture=JobResponse.describe_picture
+                        )
+                        all_paths_to_upload.append(result)
+                    else: 
+                        async for result in dots_parser.parse_pdf_stream(
+                            input_path=input_file_path,
+                            filename=Path(input_file_path).stem,
+                            prompt_mode=JobResponse.prompt_mode,
+                            save_dir=output_file_path,
+                            rebuild_directory=JobResponse.rebuild_directory,
+                            describe_picture=JobResponse.describe_picture
+                        ):
+                            page_no = result.get('page_no', -1)
+                            
+                            page_upload_tasks = []
+                            paths_to_upload = {
+                                'md': result.get('md_content_path'),
+                                'md_nohf': result.get('md_content_nohf_path'),
+                                'json': result.get('layout_info_path')
+                            }
+                            for file_type, local_path in paths_to_upload.items():
+                                if local_path:
+                                    file_name = Path(local_path).name
+                                    s3_key = f"{output_key}/{file_name}"
+                                    task = asyncio.create_task(
+                                        storage_manager.upload_file(output_bucket, s3_key, local_path, is_s3)
+                                    )
+                                    page_upload_tasks.append(task)
+                            uploaded_paths_for_page = await asyncio.gather(*page_upload_tasks)                    
 
-                        paths_to_upload['page_no'] = page_no
-                        all_paths_to_upload.append(paths_to_upload)
-                        page_response = {
-                            "success": True,
-                            "message": "parse success",
-                            "page_no": page_no,
-                            "uploaded_files": [path for path in uploaded_paths_for_page if path]
-                        }
-                        yield json.dumps(page_response) + "\n"
+                            paths_to_upload['page_no'] = page_no
+                            all_paths_to_upload.append(paths_to_upload)
+                            page_response = {
+                                "success": True,
+                                "message": "parse success",
+                                "page_no": page_no,
+                                "uploaded_files": [path for path in uploaded_paths_for_page if path]
+                            }
+                            yield json.dumps(page_response) + "\n"
                 except Exception as e:
                     logging.error(f"Error during parsing pages: {str(e)}")
 
@@ -497,6 +509,7 @@ async def parse_file(
         is_s3=is_s3,
         input_s3_path=input_s3_path,
         output_s3_path=output_s3_path,
+        parse_type="pdf" if file_ext == ".pdf" else "image",
         prompt_mode=prompt_mode,
         fitz_preprocess=fitz_preprocess,
         rebuild_directory=rebuild_directory,
