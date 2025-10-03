@@ -20,3 +20,5 @@ sqlmodel==0.0.25
 boto3
 asyncpg
 psycopg[binary]
+
+contextlib2
