@@ -36,12 +36,22 @@ class DotsOCRParser:
         )
         self.directory_cleaner = None
         
-    async def parse_image(self, input_path, filename, prompt_mode, save_dir, bbox=None, fitz_preprocess=False):
+    async def parse_image(self, input_path, filename, prompt_mode, save_dir, bbox=None, fitz_preprocess=False, describe_picture=False):
         loop = asyncio.get_running_loop()
         origin_image = await loop.run_in_executor(self.parser.cpu_executor, fetch_image, input_path)
         result = await self.parser._parse_single_image(
-            origin_image, prompt_mode, save_dir, filename, source="image", bbox=bbox, fitz_preprocess=fitz_preprocess
+            origin_image=origin_image,
+            prompt_mode=prompt_mode,
+            save_dir= None if describe_picture else save_dir,
+            save_name= None if describe_picture else filename,
+            page_idx=0,
+            source="pdf"
         )
+        if describe_picture:
+            result = await self.parser._describe_picture_in_single_page(
+                origin_image=origin_image,
+                cells=result[0],
+            )
         return [result]
         
     async def rebuild_directory(self, cells_list, images_origin):
