@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import datetime
@@ -7,6 +8,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
+from contextlib import asynccontextmanager
 
 from app.utils.pg_vector.table import Base, OCRTable
 
@@ -16,6 +18,7 @@ class PGVector:
     session_maker: async_sessionmaker = None
     connection_string: str = ""
     table: OCRTable = None
+    _semaphore: asyncio.Semaphore = None
 
     def __init__(self, connection_string=""):
         if not connection_string:
@@ -28,15 +31,16 @@ class PGVector:
             self.engine = create_async_engine(
                 self.connection_string,
                 pool_size=20,  # Number of persistent connections
-                max_overflow=20,  # Additional connections beyond pool_size
+                max_overflow=100,  # Additional connections beyond pool_size
                 pool_timeout=30,  # Timeout for getting connection from pool
                 pool_recycle=3600,  # Recycle connections every hour
                 pool_pre_ping=True,  # Verify connections before use
                 echo=False,  # Set to True for SQL logging in development
             )
+            self._semaphore = asyncio.Semaphore(20 + 100)
         return self.engine
 
-    async def get_session(self) -> AsyncSession:
+    async def get_session_maker(self) -> AsyncSession:
         if not self.session_maker:
             engine = await self.ensure_engine()
             self.session_maker = async_sessionmaker(
@@ -44,7 +48,26 @@ class PGVector:
                 class_=AsyncSession,
                 expire_on_commit=False,
             )
-        return self.session_maker()
+        return self.session_maker
+    
+    @asynccontextmanager
+    async def managed_session(self) -> AsyncSession:
+        """
+        Provides a session with concurrency control via a semaphore.
+        This is the new, recommended way to get a session.
+        """
+        session_maker = await self.get_session_maker()
+        
+        logging.debug(f"Waiting to acquire semaphore. Available: {self._semaphore._value}")
+        async with self._semaphore:
+            logging.debug("Semaphore acquired. Getting session from pool.")
+            async with session_maker() as session:
+                try:
+                    yield session
+                except Exception:
+                    logging.error("Exception occurred within managed session, rollback will be triggered.")
+                    raise
+        logging.debug("Semaphore released.")
 
     def get_connection_string(self):
         """PostgreSQL connection string"""
@@ -72,7 +95,7 @@ class PGVector:
     async def upsert_record(self, record: OCRTable):
         """Insert or update a record in the OCR table"""
         try:
-            async with await self.get_session() as session:
+            async with self.managed_session() as session:
                 # Convert record to dict for upsert
                 record_dict = dict(record)
 
@@ -88,13 +111,12 @@ class PGVector:
                 return True
         except Exception as e:
             logging.error(f"Error upserting record: {e}")
-            await session.rollback()
             raise
 
     async def get_record_by_id(self, record_id: str) -> Optional[OCRTable]:
         """Retrieve a record by its ID"""
         try:
-            async with await self.get_session() as session:
+            async with self.managed_session() as session:
                 stmt = select(OCRTable).where(OCRTable.id == record_id)
                 result = await session.execute(stmt)
                 record = result.scalar_one_or_none()
@@ -112,7 +134,7 @@ class PGVector:
     async def update_record(self, record_id: str, updates: OCRTable) -> bool:
         """Update specific fields of a record"""
         try:
-            async with await self.get_session() as session:
+            async with self.managed_session() as session:
                 stmt = (
                     update(OCRTable)
                     .where(OCRTable.id == record_id)
@@ -136,7 +158,7 @@ class PGVector:
     async def delete_record(self, record_id: str) -> bool:
         """Delete a record by its ID"""
         try:
-            async with await self.get_session() as session:
+            async with self.managed_session() as session:
                 stmt = delete(OCRTable).where(OCRTable.id == record_id)
                 result = await session.execute(stmt)
                 await session.commit()
@@ -155,7 +177,7 @@ class PGVector:
     async def flush(self):
         """Flush the current session"""
         try:
-            async with await self.get_session() as session:
+            async with self.managed_session() as session:
                 await session.flush()
                 logging.info("Successfully flushed the session")
         except Exception as e:
