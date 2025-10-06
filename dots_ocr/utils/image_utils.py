@@ -193,4 +193,4 @@ def get_image_by_fitz_doc(image, target_dpi=200):
     page = doc[0]
     image_fitz, scale_factor = fitz_doc_to_image(page, target_dpi=target_dpi, origin_dpi=origin_dpi)
 
-    return image_fitz
+    return image_fitz, scale_factor

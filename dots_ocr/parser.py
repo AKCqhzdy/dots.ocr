@@ -45,14 +45,19 @@ class DotsOCRParser:
             save_dir= None if describe_picture else save_dir,
             save_name= None if describe_picture else filename,
             page_idx=0,
+            bbox=None,
+            fitz_preprocess=False,
             source="pdf"
         )
-        if describe_picture:
-            result = await self.parser._describe_picture_in_single_page(
-                origin_image=origin_image,
-                cells=result[0],
-            )
-        return [result]
+        if not describe_picture:
+            return result
+        
+        await self.parser._describe_picture_in_single_page(
+            origin_image=origin_image,
+            cells=result,
+        )
+        final_result = await self.parser._save_results(result, save_dir, filename, origin_image, 1)
+        return final_result
         
     async def rebuild_directory(self, cells_list, images_origin):
         if self.directory_cleaner is None:
