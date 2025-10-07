@@ -166,10 +166,11 @@ def layoutjson2md(image: Image.Image, cells: list, text_key: str = 'text', no_pa
         if no_page_hf and cell['category'] in ['Page-header', 'Page-footer']:
             continue
         
-        if cell['category'] == 'Picture':
-            image_crop = image.crop((x1, y1, x2, y2))
-            image_base64 = PILimage_to_base64(image_crop)
-            text_items.append(f"![]({image_base64})")
+        # now save description of the picture instead of the picture base64
+        # if cell['category'] == 'Picture':
+        #     image_crop = image.crop((x1, y1, x2, y2))
+        #     image_base64 = PILimage_to_base64(image_crop)
+        #     text_items.append(f"![]({image_base64})")
         elif cell['category'] == 'Formula':
             text_items.append(get_formula_in_markdown(text))
         else:            

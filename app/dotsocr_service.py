@@ -115,6 +115,7 @@ class JobResponseModel(BaseModel):
     fitz_preprocess: bool = False
     rebuild_directory: bool = False
     describe_picture: bool = False
+    overwrite: bool = False
 
     def transform_to_map(self):
         mapping = {
@@ -239,7 +240,7 @@ async def stream_and_upload_generator(
                         )
                         with open(output_md5_path, 'r') as f:
                             existing_md5 = f.read().strip()
-                        if existing_md5 == file_md5:
+                        if existing_md5 == file_md5 and not JobResponse.overwrite:
                             if all_files_exist:
                                 logging.info(f"Output files already exist in S3 and MD5 matches for {input_s3_path}. Skipping processing.")
                                 JobResponse.json_url = f"{output_s3_path}/{output_file_name}.json"
@@ -259,7 +260,7 @@ async def stream_and_upload_generator(
                             # clean the whole output directory in S3
                             # print(f"Cleaning output directory in S3: {output_bucket}/{output_key}/")
                             # await storage_manager.delete_files_in_directory(output_bucket, f"{output_key}/", is_s3)
-                            logging.info(f"MD5 mismatch for {input_s3_path}. Reprocessing the file.")
+                            logging.info(f"MD5 mismatch for {input_s3_path} or overwrite is set true. Reprocessing the file.")
                     except Exception as e:
                         logging.warning(f"Failed to verify existing MD5 hash for {input_s3_path}: {str(e)}. Reprocessing the file.")
                 else:
@@ -349,40 +350,41 @@ async def stream_and_upload_generator(
                     logging.error(f"Error during parsing pages: {str(e)}")
 
 
-                # combine all page to upload
-                all_paths_to_upload.sort(key=lambda item: item['page_no'])
-                output_files = {}
-                try:
-                    output_files['md'] = open(output_md_path, 'w', encoding='utf-8')
-                    output_files['json'] = open(output_json_path, 'w', encoding='utf-8')
-                    output_files['md_nohf'] = open(output_md_nohf_path, 'w', encoding='utf-8')
-                    all_json_data = []
-                    for p in all_paths_to_upload:
-                        page_no = p.pop('page_no')
-                        for file_type, local_path in p.items():
-                            if file_type == 'json':
-                                try:
-                                    with open(local_path, 'r', encoding='utf-8') as input_file:
-                                        data = json.load(input_file)
-                                    data = {"page_no": page_no, **data}
-                                    all_json_data.append(data)
-                                except Exception as e:
-                                    print(f"WARNING: Failed to read layout info file {local_path}: {str(e)}")
-                                    all_json_data.append({"page_no": page_no})
-                            else:
-                                try:
-                                    with open(local_path, 'r', encoding='utf-8') as input_file:
-                                        file_content = input_file.read()
-                                    output_files[file_type].write(file_content)
-                                    output_files[file_type].write("\n\n")
-                                except Exception as e:
-                                    print(f"WARNING: Failed to read {file_type} file {local_path}: {str(e)}")
-                    json.dump(all_json_data, output_files['json'], indent=4, ensure_ascii=False)
-                finally:
-                    # Ensure all file handles are properly closed
-                    for file_handle in output_files.values():
-                        if hasattr(file_handle, 'close'):
-                            file_handle.close()
+                if JobResponse.parse_type == "pdf":
+                    # combine all page to upload
+                    all_paths_to_upload.sort(key=lambda item: item['page_no'])
+                    output_files = {}
+                    try:
+                        output_files['md'] = open(output_md_path, 'w', encoding='utf-8')
+                        output_files['json'] = open(output_json_path, 'w', encoding='utf-8')
+                        output_files['md_nohf'] = open(output_md_nohf_path, 'w', encoding='utf-8')
+                        all_json_data = []
+                        for p in all_paths_to_upload:
+                            page_no = p.pop('page_no')
+                            for file_type, local_path in p.items():
+                                if file_type == 'json':
+                                    try:
+                                        with open(local_path, 'r', encoding='utf-8') as input_file:
+                                            data = json.load(input_file)
+                                        data = {"page_no": page_no, **data}
+                                        all_json_data.append(data)
+                                    except Exception as e:
+                                        print(f"WARNING: Failed to read layout info file {local_path}: {str(e)}")
+                                        all_json_data.append({"page_no": page_no})
+                                else:
+                                    try:
+                                        with open(local_path, 'r', encoding='utf-8') as input_file:
+                                            file_content = input_file.read()
+                                        output_files[file_type].write(file_content)
+                                        output_files[file_type].write("\n\n")
+                                    except Exception as e:
+                                        print(f"WARNING: Failed to read {file_type} file {local_path}: {str(e)}")
+                        json.dump(all_json_data, output_files['json'], indent=4, ensure_ascii=False)
+                    finally:
+                        # Ensure all file handles are properly closed
+                        for file_handle in output_files.values():
+                            if hasattr(file_handle, 'close'):
+                                file_handle.close()
                 
                 await storage_manager.upload_file(output_bucket, f"{output_key}/{output_file_name}.md", str(output_md_path), is_s3)
                 await storage_manager.upload_file(output_bucket, f"{output_key}/{output_file_name}_nohf.md", str(output_md_nohf_path), is_s3)
@@ -465,7 +467,8 @@ async def parse_file(
     prompt_mode: str = "prompt_layout_all_en",
     fitz_preprocess: bool = Form(False),
     rebuild_directory: bool = Form(False),
-    describe_picture: bool = Form(True)
+    describe_picture: bool = Form(True),
+    overwrite: bool = Form(False)
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
@@ -493,7 +496,7 @@ async def parse_file(
     # Get the existing job status from pgvector
     existing_record = await get_record_pgvector(OCRJobId)
     if existing_record:
-        if existing_record.status in ["pending", "retrying", "processing"]:
+        if existing_record.status in ["pending", "retrying", "processing"] and OCRJobId in JobResponseDict:
             return JSONResponse({"OCRJobId": OCRJobId, "status": existing_record.status, "message": "Job is already in progress"}, status_code=202)
         elif existing_record.status == "completed" or existing_record.status == "failed":
             # allow re-process but check md5 first in the worker
@@ -514,7 +517,8 @@ async def parse_file(
         prompt_mode=prompt_mode,
         fitz_preprocess=fitz_preprocess,
         rebuild_directory=rebuild_directory,
-        describe_picture=describe_picture
+        describe_picture=describe_picture,
+        overwrite=overwrite
     )
     JobResponseDict[OCRJobId] = JobResponse
     JobLocks[OCRJobId] = asyncio.Lock()
