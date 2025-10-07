@@ -31,6 +31,9 @@ NUM_WORKERS = 4
 WORKER_TASKS: List[asyncio.Task] = []
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    
+    await pg_vector_manager.ensure_table_exists()
+
     logging.info(f"Starting up {NUM_WORKERS} worker tasks...")
     for i in range(NUM_WORKERS):
         task = asyncio.create_task(worker(f"Worker-{i}"))
@@ -44,6 +47,7 @@ async def lifespan(app: FastAPI):
     
     await asyncio.gather(*WORKER_TASKS, return_exceptions=True)
     logging.info("All worker tasks have been canceled.")
+    
 
 app = FastAPI(
     title="dotsOCR API",
@@ -139,8 +143,6 @@ class JobResponseModel(BaseModel):
 async def update_pgvector(job: JobResponseModel):
     job.updated_at = datetime.utcnow()
     async with PGVECTOR_LOCK:
-        await pg_vector_manager.ensure_table_exists()
-        
         record = await pg_vector_manager.get_record_by_id(job.job_id)
 
         if record:
@@ -154,7 +156,6 @@ async def update_pgvector(job: JobResponseModel):
 
 async def get_record_pgvector(job_id: str) -> OCRTable:
     async with PGVECTOR_LOCK:
-        await pg_vector_manager.ensure_table_exists()
         record = await pg_vector_manager.get_record_by_id(job_id)
         return record
 
