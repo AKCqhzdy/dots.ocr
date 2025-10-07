@@ -115,7 +115,7 @@ class JobResponseModel(BaseModel):
     fitz_preprocess: bool = False
     rebuild_directory: bool = False
     describe_picture: bool = False
-    over_write: bool = False
+    overwrite: bool = False
 
     def transform_to_map(self):
         mapping = {
@@ -240,7 +240,7 @@ async def stream_and_upload_generator(
                         )
                         with open(output_md5_path, 'r') as f:
                             existing_md5 = f.read().strip()
-                        if existing_md5 == file_md5 and not JobResponse.over_write:
+                        if existing_md5 == file_md5 and not JobResponse.overwrite:
                             if all_files_exist:
                                 logging.info(f"Output files already exist in S3 and MD5 matches for {input_s3_path}. Skipping processing.")
                                 JobResponse.json_url = f"{output_s3_path}/{output_file_name}.json"
@@ -260,7 +260,7 @@ async def stream_and_upload_generator(
                             # clean the whole output directory in S3
                             # print(f"Cleaning output directory in S3: {output_bucket}/{output_key}/")
                             # await storage_manager.delete_files_in_directory(output_bucket, f"{output_key}/", is_s3)
-                            logging.info(f"MD5 mismatch for {input_s3_path} or over_write is set true. Reprocessing the file.")
+                            logging.info(f"MD5 mismatch for {input_s3_path} or overwrite is set true. Reprocessing the file.")
                     except Exception as e:
                         logging.warning(f"Failed to verify existing MD5 hash for {input_s3_path}: {str(e)}. Reprocessing the file.")
                 else:
@@ -468,7 +468,7 @@ async def parse_file(
     fitz_preprocess: bool = Form(False),
     rebuild_directory: bool = Form(False),
     describe_picture: bool = Form(True),
-    over_write: bool = Form(False)
+    overwrite: bool = Form(False)
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
@@ -518,7 +518,7 @@ async def parse_file(
         fitz_preprocess=fitz_preprocess,
         rebuild_directory=rebuild_directory,
         describe_picture=describe_picture,
-        over_write=over_write
+        overwrite=overwrite
     )
     JobResponseDict[OCRJobId] = JobResponse
     JobLocks[OCRJobId] = asyncio.Lock()
