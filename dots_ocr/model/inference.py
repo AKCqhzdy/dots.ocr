@@ -1,27 +1,26 @@
-import json
-import io
-import base64
-import math
-from PIL import Image
-import requests
-from dots_ocr.utils.image_utils import PILimage_to_base64
-from openai import AsyncOpenAI
 import os
+
 import httpx
+from openai import AsyncOpenAI
+
+from dots_ocr.utils.image_utils import PILimage_to_base64
+
 
 async def inference_with_vllm(
-        image,
-        prompt, 
-        ip="localhost",
-        port=8000,
-        temperature=0.1,
-        top_p=0.9,
-        max_completion_tokens=32768,
-        model_name='dotsocr',
-        ):
-    
+    image,
+    prompt,
+    ip="localhost",
+    port=8000,
+    temperature=0.1,
+    top_p=0.9,
+    max_completion_tokens=32768,
+    model_name="dotsocr",
+):
+
     addr = f"http://{ip}:{port}/v1"
-    client = AsyncOpenAI(api_key="{}".format(os.environ.get("API_KEY", "0")), base_url=addr, timeout=6000)
+    client = AsyncOpenAI(
+        api_key="{}".format(os.environ.get("API_KEY", "0")), base_url=addr, timeout=6000
+    )
     messages = []
     messages.append(
         {
@@ -29,19 +28,23 @@ async def inference_with_vllm(
             "content": [
                 {
                     "type": "image_url",
-                    "image_url": {"url":  PILimage_to_base64(image)},
+                    "image_url": {"url": PILimage_to_base64(image)},
                 },
-                {"type": "text", "text": f"<|img|><|imgpad|><|endofimg|>{prompt}"}  # if no "<|img|><|imgpad|><|endofimg|>" here,vllm v1 will add "\n" here
+                {
+                    "type": "text",
+                    "text": f"<|img|><|imgpad|><|endofimg|>{prompt}",
+                },  # if no "<|img|><|imgpad|><|endofimg|>" here,vllm v1 will add "\n" here
             ],
         }
     )
     try:
         response = await client.chat.completions.create(
-            messages=messages, 
-            model=model_name, 
+            messages=messages,
+            model=model_name,
             max_completion_tokens=max_completion_tokens,
             temperature=temperature,
-            top_p=top_p)
+            top_p=top_p,
+        )
         response = response.choices[0].message.content
         return response
     except httpx.TimeoutException:
@@ -50,4 +53,3 @@ async def inference_with_vllm(
     except httpx.RequestError as e:
         print("request error:", e)
         return "error"
-

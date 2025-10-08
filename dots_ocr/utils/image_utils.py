@@ -1,14 +1,16 @@
-import math
 import base64
-from PIL import Image
-from typing import Tuple
+import copy
+import math
 import os
-from dots_ocr.utils.consts import IMAGE_FACTOR, MIN_PIXELS, MAX_PIXELS
-from dots_ocr.utils.doc_utils import fitz_doc_to_image
 from io import BytesIO
+from typing import Tuple
+
 import fitz
 import requests
-import copy
+from PIL import Image
+
+from dots_ocr.utils.consts import IMAGE_FACTOR, MAX_PIXELS, MIN_PIXELS
+from dots_ocr.utils.doc_utils import fitz_doc_to_image
 
 
 def round_by_factor(number: int, factor: int) -> int:
@@ -56,25 +58,26 @@ def smart_resize(
         beta = math.sqrt(min_pixels / (height * width))
         h_bar = ceil_by_factor(height * beta, factor)
         w_bar = ceil_by_factor(width * beta, factor)
-        if h_bar * w_bar > max_pixels:  # max_pixels first to control the token length 
+        if h_bar * w_bar > max_pixels:  # max_pixels first to control the token length
             beta = math.sqrt((h_bar * w_bar) / max_pixels)
             h_bar = max(factor, floor_by_factor(h_bar / beta, factor))
             w_bar = max(factor, floor_by_factor(w_bar / beta, factor))
     return h_bar, w_bar
 
 
-
-def PILimage_to_base64(image, format='PNG'):
+def PILimage_to_base64(image, format="PNG"):
     buffered = BytesIO()
     image.save(buffered, format=format)
-    base64_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+    base64_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
     return f"data:image/{format.lower()};base64,{base64_str}"
 
 
 def to_rgb(pil_image: Image.Image) -> Image.Image:
-    if pil_image.mode == 'RGBA':
+    if pil_image.mode == "RGBA":
         white_background = Image.new("RGB", pil_image.size, (255, 255, 255))
-        white_background.paste(pil_image, mask=pil_image.split()[3])  # Use alpha channel as mask
+        white_background.paste(
+            pil_image, mask=pil_image.split()[3]
+        )  # Use alpha channel as mask
         return white_background
     else:
         return pil_image.convert("RGB")
@@ -82,12 +85,12 @@ def to_rgb(pil_image: Image.Image) -> Image.Image:
 
 # copy from https://github.com/QwenLM/Qwen2.5-VL/blob/main/qwen-vl-utils/src/qwen_vl_utils/vision_process.py
 def fetch_image(
-        image, 
-        min_pixels=None,
-        max_pixels=None,
-        resized_height=None,
-        resized_width=None,
-    ) -> Image.Image:
+    image,
+    min_pixels=None,
+    max_pixels=None,
+    resized_height=None,
+    resized_width=None,
+) -> Image.Image:
     assert image is not None, f"image not found, maybe input format error: {image}"
     image_obj = None
     if isinstance(image, Image.Image):
@@ -110,7 +113,9 @@ def fetch_image(
     else:
         image_obj = Image.open(image)
     if image_obj is None:
-        raise ValueError(f"Unrecognized image input, support local path, http url, base64 and PIL.Image, got {image}")
+        raise ValueError(
+            f"Unrecognized image input, support local path, http url, base64 and PIL.Image, got {image}"
+        )
     image = to_rgb(image_obj)
     ## resize
     if resized_height and resized_width:
@@ -119,7 +124,9 @@ def fetch_image(
             resized_width,
             factor=IMAGE_FACTOR,
         )
-        assert resized_height>0 and resized_width>0, f"resized_height: {resized_height}, resized_width: {resized_width}, min_pixels: {min_pixels}, max_pixels:{max_pixels}, width: {width}, height:{height}, "
+        assert (
+            resized_height > 0 and resized_width > 0
+        ), f"resized_height: {resized_height}, resized_width: {resized_width}, min_pixels: {min_pixels}, max_pixels:{max_pixels}, width: {width}, height:{height}, "
         image = image.resize((resized_width, resized_height))
     elif min_pixels or max_pixels:
         width, height = image.size
@@ -134,35 +141,35 @@ def fetch_image(
             min_pixels=min_pixels,
             max_pixels=max_pixels,
         )
-        assert resized_height>0 and resized_width>0, f"resized_height: {resized_height}, resized_width: {resized_width}, min_pixels: {min_pixels}, max_pixels:{max_pixels}, width: {width}, height:{height}, "
+        assert (
+            resized_height > 0 and resized_width > 0
+        ), f"resized_height: {resized_height}, resized_width: {resized_width}, min_pixels: {min_pixels}, max_pixels:{max_pixels}, width: {width}, height:{height}, "
         image = image.resize((resized_width, resized_height))
 
     return image
 
+
 def get_input_dimensions(
-    image: Image.Image,
-    min_pixels: int,
-    max_pixels: int,
-    factor: int = 28
+    image: Image.Image, min_pixels: int, max_pixels: int, factor: int = 28
 ) -> Tuple[int, int]:
     """
     Gets the resized dimensions of the input image.
-    
+
     Args:
         image: The original image.
         min_pixels: The minimum number of pixels.
         max_pixels: The maximum number of pixels.
         factor: The resizing factor.
-        
+
     Returns:
         The resized (width, height).
     """
     input_height, input_width = smart_resize(
-        image.height, 
+        image.height,
         image.width,
         factor=factor,
         min_pixels=min_pixels,
-        max_pixels=max_pixels
+        max_pixels=max_pixels,
     )
     return input_width, input_height
 
@@ -172,25 +179,27 @@ def get_image_by_fitz_doc(image, target_dpi=200):
     if not isinstance(image, Image.Image):
         assert isinstance(image, str)
         _, file_ext = os.path.splitext(image)
-        assert file_ext in {'.jpg', '.jpeg', '.png'}
+        assert file_ext in {".jpg", ".jpeg", ".png"}
 
         if image.startswith("http://") or image.startswith("https://"):
             with requests.get(image, stream=True) as response:
                 response.raise_for_status()
                 data_bytes = response.content
         else:
-            with open(image, 'rb') as f:
+            with open(image, "rb") as f:
                 data_bytes = f.read()
 
         image = Image.open(BytesIO(data_bytes))
     else:
         data_bytes = BytesIO()
-        image.save(data_bytes, format='PNG')
+        image.save(data_bytes, format="PNG")
 
-    origin_dpi = image.info.get('dpi', None)
+    origin_dpi = image.info.get("dpi", None)
     pdf_bytes = fitz.open(stream=data_bytes).convert_to_pdf()
-    doc = fitz.open('pdf', pdf_bytes)
+    doc = fitz.open("pdf", pdf_bytes)
     page = doc[0]
-    image_fitz, scale_factor = fitz_doc_to_image(page, target_dpi=target_dpi, origin_dpi=origin_dpi)
+    image_fitz, scale_factor = fitz_doc_to_image(
+        page, target_dpi=target_dpi, origin_dpi=origin_dpi
+    )
 
     return image_fitz, scale_factor

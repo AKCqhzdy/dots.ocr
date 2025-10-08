@@ -1,14 +1,13 @@
 import asyncio
 import logging
 import os
-from datetime import datetime
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession
-from contextlib import asynccontextmanager
 
 from app.utils.pg_vector.table import Base, OCRTable
 
@@ -49,7 +48,7 @@ class PGVector:
                 expire_on_commit=False,
             )
         return self.session_maker
-    
+
     @asynccontextmanager
     async def managed_session(self) -> AsyncSession:
         """
@@ -57,15 +56,19 @@ class PGVector:
         This is the new, recommended way to get a session.
         """
         session_maker = await self.get_session_maker()
-        
-        logging.debug(f"Waiting to acquire semaphore. Available: {self._semaphore._value}")
+
+        logging.debug(
+            f"Waiting to acquire semaphore. Available: {self._semaphore._value}"
+        )
         async with self._semaphore:
             logging.debug("Semaphore acquired. Getting session from pool.")
             async with session_maker() as session:
                 try:
                     yield session
                 except Exception:
-                    logging.error("Exception occurred within managed session, rollback will be triggered.")
+                    logging.error(
+                        "Exception occurred within managed session, rollback will be triggered."
+                    )
                     raise
         logging.debug("Semaphore released.")
 
