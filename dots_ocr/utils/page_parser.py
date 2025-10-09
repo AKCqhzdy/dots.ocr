@@ -390,7 +390,7 @@ class PageParser:
         origin_image = fetch_image(input_path)
         image, scale_factor = self.prepare_image(origin_image, source, fitz_preprocess)
         prompt = self.prepare_ocr_prompt(origin_image, image, prompt_mode, bbox)
-        return image, prompt, scale_factor
+        return origin_image, image, prompt, scale_factor
 
     async def prepare_image_for_ocr(
         self,
@@ -398,20 +398,18 @@ class PageParser:
         prompt_mode: str,
         fitz_preprocess=False,
         bbox=None,
-        source="image",
     ):
         """Wrapped in thread pool due to blocking IO operations."""
         loop = asyncio.get_running_loop()
-        image, prompt, scale_factor = await loop.run_in_executor(
+        return await loop.run_in_executor(
             self.cpu_executor,
             self._prepare_image_for_ocr,
             input_path,
             prompt_mode,
             fitz_preprocess,
             bbox,
-            source,
+            "image",
         )
-        return image, prompt, scale_factor
 
     def prepare_pdf_page(self, page: Page, prompt_mode: str, bbox=None):
         """Synchronous, CPU-bound part of image preparation."""

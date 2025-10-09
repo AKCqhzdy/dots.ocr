@@ -102,6 +102,7 @@ dots_parser = DotsOCRParser(
     ocr_task_executor_pool=ocr_task_executor_pool,
     describe_picture_task_executor_pool=describe_picture_task_executor_pool,
     page_parser=page_parser,
+    storage_manager=storage_manager,
 )
 
 
@@ -111,7 +112,7 @@ async def lifespan(_: FastAPI):
     os.makedirs(configs.INPUT_DIR, exist_ok=True)
 
     logger.remove(0)
-    logger.add(stderr, level="DEBUG")
+    logger.add(stderr, level="INFO")
 
     await pg_vector_manager.ensure_table_exists()
 
@@ -334,55 +335,13 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                             total_count += 1
                             if status in ["fallback", "failed"]:
                                 # TODO(tatiana): save failed/fallback task to OCRTable and
-                                # allow partial rerun after fix?
+                                # allow partial rerun after fix
                                 pass
                             if status == "failed":
                                 failed_count += 1
-                                page_response = {
-                                    "success": False,
-                                    "message": "parse failed",
-                                    "page_no": result.get("page_no", -1),
-                                    "uploaded_files": [],
-                                }
-                                yield page_response
                                 continue
 
-                            page_no = result.get("page_no", -1)
-
-                            page_upload_tasks = []
-                            paths_to_upload = {
-                                "md": result.get("md_content_path"),
-                                "md_nohf": result.get("md_content_nohf_path"),
-                                "json": result.get("layout_info_path"),
-                            }
-                            for file_type, local_path in paths_to_upload.items():
-                                if local_path:
-                                    file_name = Path(local_path).name
-                                    s3_key = f"{job_files.remote_output_file_key}/{file_name}"
-                                    task = asyncio.create_task(
-                                        storage_manager.upload_file(
-                                            job_files.remote_output_bucket,
-                                            s3_key,
-                                            local_path,
-                                            is_s3,
-                                        )
-                                    )
-                                    page_upload_tasks.append(task)
-                            uploaded_paths_for_page = await asyncio.gather(
-                                *page_upload_tasks
-                            )
-
-                            paths_to_upload["page_no"] = page_no
-                            all_paths_to_upload.append(paths_to_upload)
-                            page_response = {
-                                "success": True,
-                                "message": "parse success",
-                                "page_no": page_no,
-                                "uploaded_files": [
-                                    path for path in uploaded_paths_for_page if path
-                                ],
-                            }
-                            yield page_response
+                            all_paths_to_upload.append(result)
                 except Exception as e:
                     logging.error("Error during parsing pages: %s", e, exc_info=True)
                     raise

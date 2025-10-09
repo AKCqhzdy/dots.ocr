@@ -15,6 +15,7 @@ from dots_ocr.utils.doc_utils import (
     load_images_from_pdf,
 )
 from dots_ocr.utils.page_parser import PageParser
+from app.utils.storage import StorageManager
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -30,11 +31,13 @@ class DotsOCRParser:
         ocr_task_executor_pool: TaskExecutorPool,
         describe_picture_task_executor_pool: TaskExecutorPool,
         page_parser: PageParser,
+        storage_manager: StorageManager,
     ):
         self.parser = page_parser
         self.directory_cleaner = None
         self._ocr_task_executor_pool = ocr_task_executor_pool
         self._describe_picture_task_executor_pool = describe_picture_task_executor_pool
+        self._storage_manager = storage_manager
 
     async def parse_image(
         self,
@@ -176,7 +179,8 @@ class DotsOCRParser:
             with tqdm(
                 total=pdf_page_num, desc="Processing PDF pages (schedule)"
             ) as pbar:
-                for page_index in range(pdf_page_num):
+                # for page_index in range(pdf_page_num):
+                for page_index in range(2):
                     page_file_name = (
                         f"{job_response.output_file_name}_page_{page_index}"
                     )
@@ -191,6 +195,7 @@ class DotsOCRParser:
                         parser=self.parser,
                         ocr_inference_pool=self._ocr_task_executor_pool,
                         describe_picture_pool=self._describe_picture_task_executor_pool,
+                        storage_manager=self._storage_manager,
                     )
                     tasks.append(asyncio.create_task(self._concurrent_run(task)))
 

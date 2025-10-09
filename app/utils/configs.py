@@ -17,7 +17,7 @@ CONCURRENT_DESCRIBE_PICTURE_TASK_LIMIT = 16
 # The max number of concurrent OCR tasks that can be run. Increasing this may improve overall
 # resource overlapping, but at the cost of memory for buffering the extracted images from docs,
 # i.e, around CONCURRENT_OCR_TASK_LIMIT images (one for each page) can be buffered in memory.
-CONCURRENT_OCR_TASK_LIMIT = 32
+CONCURRENT_OCR_TASK_LIMIT = 64
 
 # DPI of images extracted from documents that are used for OCR.
 DPI = 200
@@ -32,7 +32,7 @@ OCR_INFERENCE_TASK_QUEUE_MAX_SIZE = 2 * CONCURRENT_OCR_INFERENCE_TASK_LIMIT
 # The number of OCR inference tasks that can be queued. Increase this may improve resource
 # overlapping, but at the cost of memory for buffering the picture blocks identified from
 # the documents.
-DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE = 2 * CONCURRENT_DESCRIBE_PICTURE_TASK_LIMIT
+DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE = 64
 
 OCR_INFERENCE_HOST = "localhost"
 OCR_INFERENCE_PORT = 8000

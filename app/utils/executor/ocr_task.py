@@ -5,12 +5,14 @@ from typing import Literal, Optional
 import fitz
 from loguru import logger
 from PIL import Image
+from pathlib import Path
 from pydantic import BaseModel
 
 from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.task_executor_pool import TaskExecutorPool
 from dots_ocr.model.inference import InferenceTask, OcrInferenceTask
 from dots_ocr.utils.page_parser import PageParser
+from app.utils.storage import StorageManager
 
 
 class OcrTaskModel(BaseModel):
@@ -193,6 +195,7 @@ class OcrTask:
                 self._stats.status = "finished"
             return result
         except Exception as e:
+            logger.error(f"Error running OCR task: {e}", exc_info=True)
             self._stats.status = "failed"
             self._stats.error_msg = str(e)
             return None
@@ -204,12 +207,43 @@ class OcrTask:
 class PdfOcrTask(OcrTask):
     """A CPU-bound task."""
 
-    def __init__(self, page: fitz.Page, **kwargs):
+    def __init__(self, page: fitz.Page, storage_manager: StorageManager, **kwargs):
         super().__init__(**kwargs)
         self._page_index = int(self._task_model.task_id)
         self._page = page
+        self._storage_manager = storage_manager
+
+    async def _upload_results(self, result: dict):
+        page_upload_tasks = []
+        paths_to_upload = {
+            "md": result.get("md_content_path"),
+            "md_nohf": result.get("md_content_nohf_path"),
+            "json": result.get("layout_info_path"),
+        }
+
+        job_files = self._task_model.job_response.get_job_local_files()
+        for _, local_path in paths_to_upload.items():
+            if local_path:
+                file_name = Path(local_path).name
+                s3_key = f"{job_files.remote_output_file_key}/{file_name}"
+                task = asyncio.create_task(
+                    self._storage_manager.upload_file(
+                        job_files.remote_output_bucket,
+                        s3_key,
+                        local_path,
+                        self._task_model.job_response.is_s3,
+                    )
+                )
+                page_upload_tasks.append(task)
+        await asyncio.gather(*page_upload_tasks)
+        paths_to_upload["page_no"] = self._page_index
+        return paths_to_upload
 
     async def _run(self):
+        """
+        Returns:
+            dict: keys are "md", "md_nohf", "json", "page_no"
+        """
         try:
             start_time = time.perf_counter()
             origin_image, image, prompt, scale_factor = self._parser.prepare_pdf_page(
@@ -255,7 +289,7 @@ class PdfOcrTask(OcrTask):
 
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image)
+                await self._describe_pictures_in_page(cells, origin_image=image)
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in page {self._page_index}: {e}"
@@ -281,7 +315,7 @@ class PdfOcrTask(OcrTask):
                 )
                 raise
 
-        return cells
+        return await self._upload_results(cells)
 
 
 class ImageOcrTask(OcrTask):
@@ -297,7 +331,6 @@ class ImageOcrTask(OcrTask):
                 self.prompt_mode,
                 self._task_model.job_response.fitz_preprocess,
                 self._bbox,
-                "pdf",
             )
         )
 
@@ -325,7 +358,7 @@ class ImageOcrTask(OcrTask):
 
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image)
+                await self._describe_pictures_in_page(cells, origin_image=image)
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in image {self._task_model.original_file_uri}: {e}"
@@ -337,8 +370,8 @@ class ImageOcrTask(OcrTask):
                     cells,
                     self._task_model.local_save_dir,
                     self._task_model.output_file_name,
-                    image,  # TODO(tatiana): why image here instead of origin_image?
-                    1,  # TODO(tatiana): why 1 here instead of using scale_factor?
+                    origin_image,
+                    1,
                 )
                 logger.debug(
                     f"Saved results for image {self._task_model.original_file_uri}: {cells}"
