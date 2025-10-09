@@ -185,7 +185,7 @@ class OcrTask:
         try:
             self._stats.attempt += 1
             start_time = time.perf_counter()
-            logger.info(
+            logger.debug(
                 f"Start processing page {self._page_index} of "
                 f"doc {self._task_model.original_file_uri} (attempt {self._stats.attempt})"
             )

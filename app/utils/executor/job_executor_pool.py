@@ -1,11 +1,12 @@
 import asyncio
-from datetime import datetime
-from typing import Awaitable, Callable, Dict, List, Literal
+from datetime import datetime, UTC
+from typing import Awaitable, Callable, Dict, List, Literal, Optional
 
 from loguru import logger
 from pydantic import BaseModel
 
-from app.utils.pg_vector import JobStatusType, OCRTable
+
+from app.utils.pg_vector import JobStatusType, OCRTable, is_job_terminated
 from app.utils.storage import parse_s3_path
 from app.utils import configs
 
@@ -160,6 +161,7 @@ class Job:
             return
 
         try:
+            await self._set_processing()
             await self._execute(self.job_response)
             logger.success(f"Job {self.job_response.job_id} successfully processed.")
             await self._set_finished()
@@ -181,6 +183,11 @@ class Job:
             "Failure recovery is not supported yet. "
             f"Job {self.job_response.job_id} cannot be restored."
         )
+
+    async def _set_processing(self):
+        self.job_response.status = "processing"
+        self.job_response.message = "Processing job"
+        await self._on_status_change(self.job_response)
 
     async def _set_failed(self, error):
         self.job_response.status = "failed"
@@ -205,6 +212,8 @@ class Job:
 class JobExecutorPool(BaseModel):
     max_queue_size: int = 4
     concurrent_job_limit: int = 4
+    terminated_job_retention_seconds: int = 24 * 60 * 60  # 24 hours
+    job_clean_interval_seconds: int = 10
 
     _workers: List[asyncio.Task] = []
     _job_queue: asyncio.Queue = None
@@ -217,6 +226,7 @@ class JobExecutorPool(BaseModel):
         for i in range(self.concurrent_job_limit):
             task = asyncio.create_task(self._worker_loop(f"Worker-{i}"))
             self._workers.append(task)
+        self._workers.append(asyncio.create_task(self._clean_old_terminated_jobs()))
 
     def stop(self):
         logger.info("Shutting down and canceling worker tasks...")
@@ -242,6 +252,34 @@ class JobExecutorPool(BaseModel):
         if job:
             job.cancel()
 
+    def get_job_status(self, job_id: str) -> Optional[JobStatusType]:
+        job = self._job_dict.get(job_id, None)
+        if job is None:
+            return None
+        return job.job_response.status
+
+    async def _clean_old_terminated_jobs(self):
+        logger.debug(f"Starting job clean task")
+        while True:
+            try:
+                for job_id, job in self._job_dict.items():
+                    # IF job is terminated
+                    if is_job_terminated(job.job_response.status):
+                        # And it is terminated for a longer period than the retention period
+                        diff = (datetime.now(UTC) - job.job_response.updated_at).seconds
+                        if diff > self.terminated_job_retention_seconds:
+                            # Remove the job from history
+                            logger.debug(
+                                f"Remove job {job_id} from history, "
+                                f"job status: {job.job_response.status}, "
+                                f"updated at: {job.job_response.updated_at}"
+                            )
+                            self._job_dict.pop(job_id)
+                await asyncio.sleep(self.job_clean_interval_seconds)
+            except asyncio.CancelledError:
+                logger.info("Job clean task is shutting down.")
+                break
+
     async def _worker_loop(self, worker_id: str):
         logger.debug(f"{worker_id} started")
         while True:
@@ -261,7 +299,6 @@ class JobExecutorPool(BaseModel):
 
                 await job.process()
                 self._job_queue.task_done()
-                self._job_dict.pop(job_id)
 
             except asyncio.CancelledError:
                 logger.info(f"{worker_id} is shutting down.")

@@ -9,11 +9,14 @@ Base = declarative_base()
 JobStatusType = Literal[
     "completed",
     "pending",
-    "retrying",
     "processing",
     "failed",
     "canceled",
 ]
+
+
+def is_job_terminated(status: JobStatusType) -> bool:
+    return status in ["completed", "failed", "canceled"]
 
 
 class OCRTable(Base):
