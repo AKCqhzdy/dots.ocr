@@ -179,8 +179,7 @@ class DotsOCRParser:
             with tqdm(
                 total=pdf_page_num, desc="Processing PDF pages (schedule)"
             ) as pbar:
-                # for page_index in range(pdf_page_num):
-                for page_index in range(2):
+                for page_index in range(pdf_page_num):
                     page_file_name = (
                         f"{job_response.output_file_name}_page_{page_index}"
                     )
