@@ -10,12 +10,12 @@ from tqdm.asyncio import tqdm
 from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.ocr_task import ImageOcrTask, OcrTaskModel, PdfOcrTask
 from app.utils.executor.task_executor_pool import TaskExecutorPool
+from app.utils.storage import StorageManager
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
 from dots_ocr.utils.doc_utils import (
     load_images_from_pdf,
 )
 from dots_ocr.utils.page_parser import PageParser
-from app.utils.storage import StorageManager
 
 
 def image_to_base64(image: Image.Image) -> str:

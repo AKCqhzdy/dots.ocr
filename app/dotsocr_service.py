@@ -28,13 +28,13 @@ from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from app.utils import configs
 from app.utils.executor import (
     Job,
     JobExecutorPool,
     JobResponseModel,
     TaskExecutorPool,
 )
-from app.utils import configs
 from app.utils.hash import compute_md5_file, compute_md5_string
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
@@ -165,7 +165,11 @@ async def get_record_pgvector(job_id: str) -> OCRTable:
 
 @app.post("/status")
 async def status_check(ocr_job_id: str = Form(alias="OCRJobId")):
-    return await get_record_pgvector(ocr_job_id)
+    status = job_executor_pool.get_job_status(ocr_job_id)
+    if status is None:
+        record = await get_record_pgvector(ocr_job_id)
+        status = record.status
+    return {"status": status}
 
 
 async def stream_and_upload_generator(job_response: JobResponseModel):
@@ -443,10 +447,6 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
 
 
 async def run_job(job: JobResponseModel):
-    job.status = "processing"
-    job.message = "Processing job"
-    await update_pgvector(job)
-
     async for page_result in stream_and_upload_generator(job):
         if "page_no" in page_result:
             # TODO(tatiana): page result not used
@@ -506,7 +506,7 @@ async def parse_file(
     # Get the existing job status from pgvector
     existing_record = await get_record_pgvector(ocr_job_id)
     if existing_record and job_executor_pool.is_job_waiting(ocr_job_id):
-        if existing_record.status in ["pending", "retrying", "processing"]:
+        if existing_record.status in ["pending", "processing"]:
             return JSONResponse(
                 {
                     "OCRJobId": ocr_job_id,
