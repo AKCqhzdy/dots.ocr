@@ -335,7 +335,7 @@ class ImageOcrTask(OcrTask):
         )
 
         try:
-            ocr_future = self._submit_ocr_inference_task(
+            ocr_future, ocr_task = await self._submit_ocr_inference_task(
                 f"{self.job_id}-ocr", image, prompt
             )
         except Exception as e:
@@ -344,6 +344,8 @@ class ImageOcrTask(OcrTask):
 
         try:
             ocr_result = await ocr_future
+            if ocr_task.is_fallback:
+                self._stats.status = "fallback"
         except Exception as e:
             logger.error(f"Error getting OCR inference result: {e}")
             raise
