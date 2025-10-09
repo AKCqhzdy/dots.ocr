@@ -1,14 +1,13 @@
 import asyncio
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Awaitable, Callable, Dict, List, Literal, Optional
 
 from loguru import logger
 from pydantic import BaseModel
 
-
+from app.utils import configs
 from app.utils.pg_vector import JobStatusType, OCRTable, is_job_terminated
 from app.utils.storage import parse_s3_path
-from app.utils import configs
 
 
 class JobLocalFiles(BaseModel):

@@ -28,13 +28,13 @@ from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from app.utils import configs
 from app.utils.executor import (
     Job,
     JobExecutorPool,
     JobResponseModel,
     TaskExecutorPool,
 )
-from app.utils import configs
 from app.utils.hash import compute_md5_file, compute_md5_string
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager

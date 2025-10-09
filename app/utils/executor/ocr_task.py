@@ -1,18 +1,18 @@
 import asyncio
 import time
+from pathlib import Path
 from typing import Literal, Optional
 
 import fitz
 from loguru import logger
 from PIL import Image
-from pathlib import Path
 from pydantic import BaseModel
 
 from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.task_executor_pool import TaskExecutorPool
+from app.utils.storage import StorageManager
 from dots_ocr.model.inference import InferenceTask, OcrInferenceTask
 from dots_ocr.utils.page_parser import PageParser
-from app.utils.storage import StorageManager
 
 
 class OcrTaskModel(BaseModel):
