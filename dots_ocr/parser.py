@@ -2,17 +2,20 @@ import asyncio
 import base64
 from io import BytesIO
 
+import fitz
+from loguru import logger
 from PIL import Image
 from tqdm.asyncio import tqdm
 
+from app.utils.executor.job_executor_pool import JobResponseModel
+from app.utils.executor.ocr_task import ImageOcrTask, OcrTaskModel, PdfOcrTask
+from app.utils.executor.task_executor_pool import TaskExecutorPool
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
 from dots_ocr.utils.doc_utils import (
-    get_pdf_page_count_fitz,
-    iter_images_from_pdf,
     load_images_from_pdf,
 )
-from dots_ocr.utils.image_utils import fetch_image
 from dots_ocr.utils.page_parser import PageParser
+from app.utils.storage import StorageManager
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -25,68 +28,52 @@ def image_to_base64(image: Image.Image) -> str:
 class DotsOCRParser:
     def __init__(
         self,
-        ip="localhost",
-        port=8000,
-        model_name="dotsocr",
-        temperature=0.1,
-        top_p=1.0,
-        max_completion_tokens=32768,
-        concurrency_limit=8,
-        dpi=200,
-        min_pixels=None,
-        max_pixels=None,
+        ocr_task_executor_pool: TaskExecutorPool,
+        describe_picture_task_executor_pool: TaskExecutorPool,
+        page_parser: PageParser,
+        storage_manager: StorageManager,
     ):
-        self.parser = PageParser(
-            ip=ip,
-            port=port,
-            model_name=model_name,
-            temperature=temperature,
-            top_p=top_p,
-            max_completion_tokens=max_completion_tokens,
-            concurrency_limit=concurrency_limit,
-            dpi=dpi,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels,
-        )
+        self.parser = page_parser
         self.directory_cleaner = None
+        self._ocr_task_executor_pool = ocr_task_executor_pool
+        self._describe_picture_task_executor_pool = describe_picture_task_executor_pool
+        self._storage_manager = storage_manager
 
     async def parse_image(
         self,
-        input_path,
-        filename,
-        prompt_mode,
-        save_dir,
+        job_response: JobResponseModel,
         bbox=None,
-        fitz_preprocess=False,
-        describe_picture=False,
     ):
-        loop = asyncio.get_running_loop()
-        origin_image = await loop.run_in_executor(
-            self.parser.cpu_executor, fetch_image, input_path
+        job_files = job_response.get_job_local_files()
+        task_model = OcrTaskModel(
+            job_response=job_response,
+            task_id=str(0),
+            output_file_name=job_files.output_file_name,
         )
-        result = await self.parser._parse_single_image(
-            origin_image=origin_image,
-            prompt_mode=prompt_mode,
-            save_dir=None if describe_picture else save_dir,
-            save_name=None if describe_picture else filename,
-            page_idx=0,
-            bbox=None,
-            fitz_preprocess=False,
-            source="pdf",
+        task = ImageOcrTask(
+            input_path=str(job_files.input_file_path),
+            bbox=bbox,
+            task_model=task_model,
+            parser=self.parser,
+            ocr_inference_pool=self._ocr_task_executor_pool,
+            describe_picture_pool=self._describe_picture_task_executor_pool,
         )
-        if not describe_picture:
-            return result
+        task_result, task = await asyncio.create_task(self._concurrent_run(task))
+        retry_run = self.parser.page_retry_number
+        while task_result is None and retry_run > 0:
+            logger.info(f"Retrying parsing image {job_response.input_s3_path}")
+            task_result, task = await asyncio.create_task(self._concurrent_run(task))
+            retry_run = retry_run - 1
 
-        await self.parser._describe_picture_in_single_page(
-            origin_image=origin_image,
-            cells=result,
-        )
-        final_result = await self.parser._save_results(
-            result, save_dir, filename, origin_image, 1
-        )
-        return final_result
+        if task_result is None:
+            raise RuntimeError(
+                f"Failed to parse image {job_response.input_s3_path} "
+                f"after {self.parser.page_retry_number} retries"
+            )
 
-    async def rebuild_directory(self, cells_list, images_origin):
+        return task_result
+
+    async def _rebuild_directory(self, cells_list, images_origin):
         if self.directory_cleaner is None:
             self.directory_cleaner = DirectoryCleaner()
 
@@ -155,12 +142,12 @@ class DotsOCRParser:
             await tqdm.gather(*tasks, desc="extracting infomation from picture")
 
         if rebuild_directory:
-            await self.rebuild_directory(cells_list, images_origin)
+            await self._rebuild_directory(cells_list, images_origin)
 
         results = []
         for cell in cells_list:
             save_name_page = f"{filename}_page_{cell['page_no']}"
-            result = await self.parser._save_results(
+            result = await self.parser.save_results(
                 cell,
                 save_dir,
                 save_name_page,
@@ -171,60 +158,89 @@ class DotsOCRParser:
 
         return results
 
-    async def parse_pdf_stream(
+    async def _concurrent_run(self, task):
+        async with self.parser.semaphore:
+            return await task.run(), task
+
+    # TODO(zihao): rebuild_directory
+    async def schedule_pdf_tasks(
         self,
-        input_path,
-        filename,
-        prompt_mode,
-        save_dir,
-        rebuild_directory=False,
-        describe_picture=False,
+        job_response: JobResponseModel,
     ):
-
-        total_pages = get_pdf_page_count_fitz(input_path)
-        semaphore = asyncio.Semaphore(self.parser.concurrency_limit)
-        batch_size = self.parser.concurrency_limit * 2
-
-        with tqdm(total=total_pages, desc="Processing PDF pages (stream)") as pbar:
-
-            async def worker(page_idx, image, scale_factor):
-                async with semaphore:
-                    result = await self.parser._parse_single_image(
-                        origin_image=image,
-                        prompt_mode=prompt_mode,
-                        save_dir=save_dir if not describe_picture else None,  #! rebuild
-                        save_name=filename if not describe_picture else None,
-                        source="pdf",
-                        page_idx=page_idx,
-                        scale_factor=scale_factor,
-                    )
-
-                    if describe_picture:
-                        await self.parser._describe_picture_in_single_page(
-                            origin_image=image,
-                            cells=result,
-                        )
-                        save_name_page = f"{filename}_page_{result['page_no']}"
-                        result = await self.parser._save_results(
-                            result, save_dir, save_name_page, image, scale_factor
-                        )
-
-                    pbar.update(1)
-                    return result
-
+        job_files = job_response.get_job_local_files()
+        with fitz.open(str(job_files.input_file_path)) as doc:
+            pdf_page_num = doc.page_count
+            logger.info(
+                f"Scheduling {pdf_page_num} PDF tasks for {job_files.input_file_path}"
+            )
             tasks = []
-            for page_idx, image, scale_factor in iter_images_from_pdf(
-                input_path, dpi=200
-            ):
-                task = asyncio.create_task(worker(page_idx, image, scale_factor))
-                tasks.append(task)
 
-                if len(tasks) >= batch_size:
-                    for future in asyncio.as_completed(tasks):
-                        yield await future
-                    tasks = []
+            failed_tasks = []
+            with tqdm(
+                total=pdf_page_num, desc="Processing PDF pages (schedule)"
+            ) as pbar:
+                for page_index in range(pdf_page_num):
+                    page_file_name = (
+                        f"{job_response.output_file_name}_page_{page_index}"
+                    )
+                    task_model = OcrTaskModel(
+                        job_response=job_response,
+                        task_id=str(page_index),
+                        output_file_name=page_file_name,
+                    )
+                    task = PdfOcrTask(
+                        doc[page_index],
+                        task_model=task_model,
+                        parser=self.parser,
+                        ocr_inference_pool=self._ocr_task_executor_pool,
+                        describe_picture_pool=self._describe_picture_task_executor_pool,
+                        storage_manager=self._storage_manager,
+                    )
+                    tasks.append(asyncio.create_task(self._concurrent_run(task)))
 
-            if tasks:
+                # retry by stages instead of retrying each task asynchronously
                 for future in asyncio.as_completed(tasks):
-                    yield await future
-                # to do: rebuild directory
+                    task_result, task = await future
+                    if task_result is None:
+                        failed_tasks.append(task)
+                        if task.error_msg is not None:
+                            logger.warning(
+                                f"Error processing task {task.job_id}-{task.task_id}: "
+                                f"{task.error_msg}"
+                            )
+                        continue
+                    pbar.update(1)
+                    yield task_result, task.status
+
+                retry_run = self.parser.page_retry_number
+                while len(failed_tasks) > 0 and retry_run > 0:
+                    task_ids = [task.task_id for task in failed_tasks]
+                    logger.info(f"Retrying parsing pages {','.join(task_ids)}")
+                    retry_run = retry_run - 1
+                    tasks = []
+                    for task in failed_tasks:
+                        tasks.append(asyncio.create_task(self._concurrent_run(task)))
+                    failed_tasks = []
+                    for future in asyncio.as_completed(tasks):
+                        task_result, task = await future
+                        if task_result is None:
+                            failed_tasks.append(task)
+                            if task.error_msg is not None:
+                                logger.warning(
+                                    f"Error processing task {task.job_id}-{task.task_id}: "
+                                    f"{task.error_msg}"
+                                )
+                            continue
+                        pbar.update(1)
+                        yield task_result, task.status
+
+                if len(failed_tasks) > 0:
+                    task_ids = [task.task_id for task in failed_tasks]
+                    error_msg = (
+                        f"Failed to process {len(failed_tasks)} pages in "
+                        f"{job_response.input_s3_path} after {self.parser.page_retry_number}"
+                        f" retries: {task_ids}"
+                    )
+                    logger.error(error_msg)
+                    for task in failed_tasks:
+                        yield {"page_no": int(task.task_id)}, task.status

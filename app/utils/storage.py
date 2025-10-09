@@ -8,6 +8,15 @@ import boto3
 from botocore.config import Config
 
 
+def parse_s3_path(s3_path: str, is_s3: bool):
+    if is_s3:
+        s3_path = s3_path.replace("s3://", "")
+    else:
+        s3_path = s3_path.replace("oss://", "")
+    bucket, *key_parts = s3_path.split("/")
+    return bucket, "/".join(key_parts)
+
+
 class StorageManager:
 
     def __init__(self):
