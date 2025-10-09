@@ -1,11 +1,15 @@
-import os
-import psutil
-import tracemalloc
 import gc
+import os
+import tracemalloc
 from datetime import datetime
 
+import psutil
+
+
 class MemoryLogger:
-    def __init__(self, log_file: str = "parse_pdf_stream_enhanced.log", to_stdout: bool = False):
+    def __init__(
+        self, log_file: str = "parse_pdf_stream_enhanced.log", to_stdout: bool = False
+    ):
         self.log_file = log_file
         self.to_stdout = to_stdout
         tracemalloc.start()

@@ -1,7 +1,8 @@
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, DateTime, String
-from typing import Optional, Literal
 from datetime import datetime
+from typing import Literal, Optional
+
+from sqlalchemy import Column, DateTime, String
+from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
 
@@ -13,6 +14,7 @@ status_type = Literal[
     "failed",
     "canceled",
 ]
+
 
 class OCRTable(Base):
     __tablename__ = "KnowledgeBaseOCR"

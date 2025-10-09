@@ -1,14 +1,10 @@
 import argparse
-import os
 
-from openai import OpenAI
-from transformers.utils.versions import require_version
 from PIL import Image
-import io
-import base64
-from dots_ocr.utils import dict_promptmode_to_prompt
-from dots_ocr.model.inference import inference_with_vllm
+from transformers.utils.versions import require_version
 
+from dots_ocr.model.inference import inference_with_vllm
+from dots_ocr.utils import dict_promptmode_to_prompt
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--ip", type=str, default="localhost")
@@ -28,7 +24,7 @@ def main():
     image = Image.open(image_path)
     response = inference_with_vllm(
         image,
-        prompt, 
+        prompt,
         ip=args.ip,
         port=args.port,
         temperature=0.1,
