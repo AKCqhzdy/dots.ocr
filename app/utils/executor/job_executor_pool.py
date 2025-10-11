@@ -71,6 +71,9 @@ class JobResponseModel(BaseModel):
     describe_picture: bool = False
     overwrite: bool = False
 
+    # model_name: usage_json from openai.types.CompletionUsage
+    token_usage: dict[str, dict[str, int]] = {}
+
     _job_local_files: JobLocalFiles = None
 
     def get_job_local_files(self):
@@ -131,6 +134,7 @@ class JobResponseModel(BaseModel):
             updatedBy=self.updated_by,
             createdAt=self.created_at.replace(tzinfo=None),
             updatedAt=self.updated_at.replace(tzinfo=None),
+            tokenUsage=self.token_usage,
         )
 
 
@@ -256,6 +260,12 @@ class JobExecutorPool(BaseModel):
         if job is None:
             return None
         return job.job_response.status
+
+    def get_job_response(self, job_id: str) -> Optional[JobResponseModel]:
+        job = self._job_dict.get(job_id, None)
+        if job is None:
+            return None
+        return job.job_response
 
     async def _clean_old_terminated_jobs(self):
         logger.debug(f"Starting job clean task")

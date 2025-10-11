@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from sqlalchemy import Column, DateTime, String
+from sqlalchemy import JSON, Column, DateTime, String
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -31,6 +31,7 @@ class OCRTable(Base):
     updatedAt: Optional[datetime] = Column(DateTime, nullable=True)
     createdBy: Optional[str] = Column(String, nullable=True)
     updatedBy: Optional[str] = Column(String, nullable=True)
+    tokenUsage: Optional[dict[str, dict[str, int]]] = Column(JSON, nullable=True)
 
     def __iter__(self):
         for column in self.__table__.columns:
