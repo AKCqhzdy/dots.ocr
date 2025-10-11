@@ -58,11 +58,11 @@ class DotsOCRParser:
             ocr_inference_pool=self._ocr_task_executor_pool,
             describe_picture_pool=self._describe_picture_task_executor_pool,
         )
-        task_result, task = await asyncio.create_task(self._concurrent_run(task))
+        task_result, _ = await asyncio.create_task(self._concurrent_run(task))
         retry_run = self.parser.page_retry_number
         while task_result is None and retry_run > 0:
             logger.info(f"Retrying parsing image {job_response.input_s3_path}")
-            task_result, task = await asyncio.create_task(self._concurrent_run(task))
+            task_result, _ = await asyncio.create_task(self._concurrent_run(task))
             retry_run = retry_run - 1
 
         if task_result is None:
@@ -71,7 +71,7 @@ class DotsOCRParser:
                 f"after {self.parser.page_retry_number} retries"
             )
 
-        return task_result
+        return task_result, task.token_usage
 
     async def _rebuild_directory(self, cells_list, images_origin):
         if self.directory_cleaner is None:
@@ -210,7 +210,7 @@ class DotsOCRParser:
                             )
                         continue
                     pbar.update(1)
-                    yield task_result, task.status
+                    yield task_result, task.status, task.token_usage
 
                 retry_run = self.parser.page_retry_number
                 while len(failed_tasks) > 0 and retry_run > 0:
@@ -232,7 +232,7 @@ class DotsOCRParser:
                                 )
                             continue
                         pbar.update(1)
-                        yield task_result, task.status
+                        yield task_result, task.status, task.token_usage
 
                 if len(failed_tasks) > 0:
                     task_ids = [task.task_id for task in failed_tasks]
@@ -243,4 +243,6 @@ class DotsOCRParser:
                     )
                     logger.error(error_msg)
                     for task in failed_tasks:
-                        yield {"page_no": int(task.task_id)}, task.status
+                        yield {
+                            "page_no": int(task.task_id)
+                        }, task.status, task.token_usage

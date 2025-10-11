@@ -2,10 +2,12 @@ import asyncio
 import json
 import os
 import time
+from typing import Optional
 
 import httpx
 from loguru import logger
 from openai import APITimeoutError, AsyncOpenAI
+from openai.types import CompletionUsage
 from PIL import Image
 from pydantic import BaseModel
 
@@ -24,6 +26,12 @@ class InferenceTaskOptions(BaseModel):
     max_attempts: int = 3
 
 
+class InferenceTaskStats(BaseModel):
+    success_usage: Optional[CompletionUsage] = None
+    is_fallback: bool = False
+    attempt_num: int = 0
+
+
 class InferenceTask:
     """Enviroment variable (required):
     - API_KEY: the API key for the OpenAI API.
@@ -37,14 +45,13 @@ class InferenceTask:
         prompt: str,
     ):
         self._options = options
+        self._stats = InferenceTaskStats()
         self._task_id = task_id
         self._image = image
         self._prompt = prompt
         self._client = None
         self._completion_future = asyncio.Future()
-        self._attempt = 0
         self._last_failure_reason = []
-        self._is_fallback = False
 
     @property
     def model_address(self) -> str:
@@ -60,15 +67,21 @@ class InferenceTask:
 
     @property
     def is_fallback(self) -> bool:
-        return self._is_fallback
+        return self._stats.is_fallback
+
+    # Here we do not count input tokens for failures because now the model
+    # is self-hosted and do not incur actual cost.
+    @property
+    def success_usage(self) -> tuple[str, Optional[CompletionUsage]]:
+        return self._options.model_name, self._stats.success_usage
 
     # TODO(tatiana): use tenacity.retry?
     async def process(self):
-        while self._attempt < self._options.max_attempts:
-            self._attempt += 1
+        while self._stats.attempt_num < self._options.max_attempts:
+            self._stats.attempt_num += 1
             try:
                 logger.debug(
-                    f"Inference task {self.task_id} started (attempt {self._attempt})"
+                    f"Inference task {self.task_id} started (attempt {self._stats.attempt_num})"
                 )
                 start_time = time.perf_counter()
                 result = await self._run()
@@ -100,7 +113,7 @@ class InferenceTask:
         return self._completion_future
 
     def is_last_attempt(self):
-        return self._attempt == self._options.max_attempts
+        return self._stats.attempt_num == self._options.max_attempts
 
     async def _run(self):
         return await self.inference_with_vllm()
@@ -138,6 +151,7 @@ class InferenceTask:
                 top_p=self._options.top_p,
                 timeout=self._options.timeout,
             )
+            self._stats.success_usage = response.usage
             response = response.choices[0].message.content
             return response
         except httpx.TimeoutException:
@@ -180,7 +194,7 @@ class OcrInferenceTask(InferenceTask):
         return await self.inference_with_vllm()
 
     async def _fallback_ocr(self):
-        self._is_fallback = True
+        self._stats.is_fallback = True
         prompt = dict_promptmode_to_prompt["prompt_ocr"]
         # This can still timeout. Consider a better fallback approach?
         result = await self.inference_with_vllm(prompt)
@@ -197,7 +211,7 @@ class OcrInferenceTask(InferenceTask):
     async def _fallback_picture(self):
         # We may experience timeout during picture description if we have experienced
         # timeout during OCR inference. Using this fallback may not improve stability.
-        self._is_fallback = True
+        self._stats.is_fallback = True
         logger.debug("Fall back to return picture...................")
         return json.dumps(
             [

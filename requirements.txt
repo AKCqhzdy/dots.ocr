@@ -11,6 +11,8 @@ flash-attn==2.8.0.post2
 accelerate
 tenacity==9.1.2
 redis
+httpx
+greenlet
 
 # additional
 pytest

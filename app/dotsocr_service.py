@@ -23,6 +23,7 @@ from pathlib import Path
 from sys import stderr
 
 import httpx
+from openai.types import CompletionUsage
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -161,6 +162,18 @@ async def get_record_pgvector(job_id: str) -> OCRTable:
         # await pg_vector_manager.ensure_table_exists()
         record = await pg_vector_manager.get_record_by_id(job_id)
         return record
+
+
+def sum_token_usage(
+    sum_usage: dict[str, CompletionUsage], update: dict[str, CompletionUsage]
+) -> dict[str, CompletionUsage]:
+    for model_name, usage in update.items():
+        if model_name not in sum_usage:
+            sum_usage[model_name] = usage
+        else:
+            sum_usage[model_name].completion_tokens += usage.completion_tokens
+            sum_usage[model_name].prompt_tokens += usage.prompt_tokens
+            sum_usage[model_name].total_tokens += usage.total_tokens
 
 
 @app.post("/status")
@@ -328,14 +341,20 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
 
                 try:
                     if job_response.parse_type == "image":
-                        result = await dots_parser.parse_image(job_response)
+                        result, total_token_usage = await dots_parser.parse_image(
+                            job_response
+                        )
                         all_paths_to_upload.append(result)
                     else:
                         total_count = 0
                         failed_count = 0
-                        async for result, status in dots_parser.schedule_pdf_tasks(
-                            job_response
-                        ):
+                        total_token_usage = {}
+                        async for (
+                            result,
+                            status,
+                            token_usage,
+                        ) in dots_parser.schedule_pdf_tasks(job_response):
+                            sum_token_usage(total_token_usage, token_usage)
                             total_count += 1
                             if status in ["fallback", "failed"]:
                                 # TODO(tatiana): save failed/fallback task to OCRTable and
@@ -349,6 +368,15 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                 except Exception as e:
                     logging.error("Error during parsing pages: %s", e, exc_info=True)
                     raise
+
+                # TODO(tatiana): if job is rerun (e.g., due to overwrite), we need to accumulate
+                # this measure or differentiate job runs
+                job_response.token_usage = {
+                    model_name: usage.model_dump(
+                        include={"completion_tokens", "prompt_tokens", "total_tokens"}
+                    )
+                    for model_name, usage in total_token_usage.items()
+                }
 
                 if job_response.parse_type == "pdf":
                     if failed_count / total_count > configs.TASK_FAIL_THRESHOLD:
@@ -626,6 +654,16 @@ async def health_check():
 @app.get("/health")
 async def health():
     return await health_check()
+
+
+@app.get("/token_usage/{ocr_job_id}")
+async def token_usage(ocr_job_id: str):
+    logger.info(f"get token usage for {ocr_job_id}")
+    job_response = job_executor_pool.get_job_response(ocr_job_id)
+    if job_response is None:
+        record = await get_record_pgvector(ocr_job_id)
+        return record.tokenUsage
+    return job_response.token_usage
 
 
 if __name__ == "__main__":

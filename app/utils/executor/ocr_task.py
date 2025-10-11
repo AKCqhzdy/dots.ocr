@@ -6,6 +6,7 @@ from typing import Literal, Optional
 import fitz
 from loguru import logger
 from PIL import Image
+from openai.types import CompletionUsage
 from pydantic import BaseModel
 
 from app.utils.executor.job_executor_pool import JobResponseModel
@@ -37,6 +38,18 @@ class OcrTaskStats(BaseModel):
     attempt: int = 0
     # The execution time for the successful attempt
     task_execution_time: Optional[float] = None
+    token_usage: dict[str, CompletionUsage] = {}
+
+    def add_token_usage(self, model_name: str, usage: Optional[CompletionUsage]):
+        if usage is None:
+            return
+        if model_name not in self.token_usage:
+            self.token_usage[model_name] = usage
+        else:
+            total_usage = self.token_usage[model_name]
+            total_usage.completion_tokens += usage.completion_tokens
+            total_usage.prompt_tokens += usage.prompt_tokens
+            total_usage.total_tokens += usage.total_tokens
 
 
 # TODO(tatiana): Make cpu part execute in parallel?
@@ -79,6 +92,10 @@ class OcrTask:
     @property
     def error_msg(self):
         return self._stats.error_msg
+
+    @property
+    def token_usage(self):
+        return self._stats.token_usage
 
     async def _submit_ocr_inference_task(self, task_id, image, prompt):
         task = OcrInferenceTask(
@@ -139,7 +156,7 @@ class OcrTask:
         try:
             start_time = time.perf_counter()
             idx = 0
-            tasks = []
+            tasks: list[InferenceTask] = []
             for picture_block, cropped_img in self._parser.iter_picture_blocks(
                 cells, origin_image
             ):
@@ -178,6 +195,7 @@ class OcrTask:
                 ) from future.exception()
             if task.is_fallback:
                 self._stats.status = "fallback"
+            self._stats.add_token_usage(*task.success_usage)
             picture_block["text"] = future.result().strip()
 
     async def run(self):
@@ -271,6 +289,7 @@ class PdfOcrTask(OcrTask):
             inference_result = await inference_future
             if inference_task.is_fallback:
                 self._stats.status = "fallback"
+            self._stats.add_token_usage(*inference_task.success_usage)
         except Exception as e:
             logger.error(f"Error getting OCR inference result: {e}")
             raise
@@ -346,6 +365,7 @@ class ImageOcrTask(OcrTask):
             ocr_result = await ocr_future
             if ocr_task.is_fallback:
                 self._stats.status = "fallback"
+            self._stats.add_token_usage(*ocr_task.success_usage)
         except Exception as e:
             logger.error(f"Error getting OCR inference result: {e}")
             raise
