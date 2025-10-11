@@ -23,11 +23,11 @@ from pathlib import Path
 from sys import stderr
 
 import httpx
-from openai.types import CompletionUsage
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
+from openai.types import CompletionUsage
 
 from app.utils import configs
 from app.utils.executor import (

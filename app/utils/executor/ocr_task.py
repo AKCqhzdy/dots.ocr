@@ -5,8 +5,8 @@ from typing import Literal, Optional
 
 import fitz
 from loguru import logger
-from PIL import Image
 from openai.types import CompletionUsage
+from PIL import Image
 from pydantic import BaseModel
 
 from app.utils.executor.job_executor_pool import JobResponseModel

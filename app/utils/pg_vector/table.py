@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from sqlalchemy import Column, DateTime, String, JSON
+from sqlalchemy import JSON, Column, DateTime, String
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
