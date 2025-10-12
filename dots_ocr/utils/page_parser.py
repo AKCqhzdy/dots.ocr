@@ -192,8 +192,9 @@ class PageParser:
             print(f"Error drawing layout on image: {e}")
 
         json_path = os.path.join(save_dir, f"{save_name}.json")
+        save_json = [cells_with_size]
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(cells_with_size, f, ensure_ascii=False, indent=4)
+            json.dump(save_json, f, ensure_ascii=False, indent=4)
         result["layout_info_path"] = json_path
 
         md_content = layoutjson2md(origin_image, cells, text_key="text")
@@ -246,9 +247,10 @@ class PageParser:
         result = {}
         if cells_with_size["page_no"] is not None:
             result["page_no"] = cells_with_size["page_no"]
+        save_json = [cells_with_size]
         json_path = os.path.join(save_dir, f"{save_name}.json")
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(cells_with_size, f, ensure_ascii=False, indent=4)
+            json.dump(save_json, f, ensure_ascii=False, indent=4)
         result["layout_info_path"] = json_path
 
         md_path = os.path.join(save_dir, f"{save_name}.md")

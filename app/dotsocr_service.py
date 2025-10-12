@@ -408,7 +408,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                         with open(
                                             local_path, "r", encoding="utf-8"
                                         ) as input_file:
-                                            data = json.load(input_file)
+                                            data = json.load(input_file)[0]
                                         data = {"page_no": page_no, **data}
                                         all_json_data.append(data)
                                     except Exception as e:
