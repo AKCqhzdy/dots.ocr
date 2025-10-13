@@ -45,6 +45,7 @@ class DotsOCRParser:
         bbox=None,
     ):
         job_files = job_response.get_job_local_files()
+        job_response.task_stats.total_task_count = 1
         task_model = OcrTaskModel(
             job_response=job_response,
             task_id=str(0),
@@ -66,11 +67,16 @@ class DotsOCRParser:
             retry_run = retry_run - 1
 
         if task_result is None:
+            job_response.task_stats.failed_task_count = 1
             raise RuntimeError(
                 f"Failed to parse image {job_response.input_s3_path} "
                 f"after {self.parser.page_retry_number} retries"
             )
 
+        if task.status == "fallback":
+            job_response.task_stats.fallback_task_count = 1
+        else:
+            job_response.task_stats.finished_task_count = 1
         return task_result, task.token_usage
 
     async def _rebuild_directory(self, cells_list, images_origin):
@@ -174,6 +180,7 @@ class DotsOCRParser:
                 f"Scheduling {pdf_page_num} PDF tasks for {job_files.input_file_path}"
             )
             tasks = []
+            job_response.task_stats.total_task_count = pdf_page_num
 
             failed_tasks = []
             with tqdm(

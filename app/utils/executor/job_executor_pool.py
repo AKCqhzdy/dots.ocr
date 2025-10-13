@@ -5,7 +5,7 @@ from typing import Awaitable, Callable, Dict, List, Literal, Optional
 from loguru import logger
 from pydantic import BaseModel
 
-from app.utils import configs
+from app.utils.configs import INPUT_DIR, OUTPUT_DIR
 from app.utils.pg_vector import JobStatusType, OCRTable, is_job_terminated
 from app.utils.storage import parse_s3_path
 
@@ -21,13 +21,11 @@ class JobLocalFiles(BaseModel):
 
     @property
     def input_file_path(self):
-        return configs.INPUT_DIR / self.remote_input_bucket / self.remote_input_file_key
+        return INPUT_DIR / self.remote_input_bucket / self.remote_input_file_key
 
     @property
     def output_dir_path(self):
-        return (
-            configs.OUTPUT_DIR / self.remote_output_bucket / self.remote_output_file_key
-        )
+        return OUTPUT_DIR / self.remote_output_bucket / self.remote_output_file_key
 
     @property
     def output_json_path(self):
@@ -47,6 +45,13 @@ class JobLocalFiles(BaseModel):
     def output_md5_path(self):
         output_file_path = self.output_dir_path / self.output_file_name
         return output_file_path.with_suffix(".md5")
+
+
+class JobTaskStats(BaseModel):
+    total_task_count: int = 0
+    finished_task_count: int = 0
+    failed_task_count: int = 0
+    fallback_task_count: int = 0
 
 
 class JobResponseModel(BaseModel):
@@ -73,6 +78,8 @@ class JobResponseModel(BaseModel):
 
     # model_name: usage_json from openai.types.CompletionUsage
     token_usage: dict[str, dict[str, int]] = {}
+
+    task_stats: JobTaskStats = JobTaskStats()
 
     _job_local_files: JobLocalFiles = None
 
@@ -164,6 +171,7 @@ class Job:
             return
 
         try:
+            logger.info(f"Job {self.job_response.job_id} starts execution now.")
             await self._set_processing()
             await self._execute(self.job_response)
             logger.success(f"Job {self.job_response.job_id} successfully processed.")
