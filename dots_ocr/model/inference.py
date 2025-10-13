@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Optional
+from typing import List, Optional, Union
 
 import httpx
 from loguru import logger
@@ -22,8 +22,16 @@ class InferenceTaskOptions(BaseModel):
     temperature: float
     top_p: float
     max_completion_tokens: int
-    timeout: int
+    timeout: Union[List[int], int]
     max_attempts: int = 3
+
+    def get_timeout(self, attempt_run: int):
+        attempt_index = attempt_run - 1
+        if isinstance(self.timeout, list):
+            if attempt_index >= len(self.timeout):
+                return self.timeout[-1]
+            return self.timeout[attempt_index]
+        return self.timeout
 
 
 class InferenceTaskStats(BaseModel):
@@ -124,6 +132,7 @@ class InferenceTask:
                 api_key=f'{os.environ.get("API_KEY", "0")}',
                 base_url=self.model_address,
                 timeout=6000,
+                max_retries=0,
             )
         if prompt is None:
             prompt = self._prompt
@@ -149,7 +158,7 @@ class InferenceTask:
                 max_completion_tokens=self._options.max_completion_tokens,
                 temperature=self._options.temperature,
                 top_p=self._options.top_p,
-                timeout=self._options.timeout,
+                timeout=self._options.get_timeout(self._stats.attempt_num),
             )
             self._stats.success_usage = response.usage
             response = response.choices[0].message.content
@@ -187,10 +196,6 @@ class OcrInferenceTask(InferenceTask):
                 result = await self._fallback_ocr()
                 return result
 
-            logger.debug("Asking for a quick answer...................")
-            return await self.inference_with_vllm(
-                self._prompt + " Please provide a quick answer."
-            )
         return await self.inference_with_vllm()
 
     async def _fallback_ocr(self):

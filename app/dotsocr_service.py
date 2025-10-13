@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from openai.types import CompletionUsage
 
-from app.utils import configs
+from app.utils.configs import INPUT_DIR, OUTPUT_DIR, Configs
 from app.utils.executor import (
     Job,
     JobExecutorPool,
@@ -50,6 +50,9 @@ logging.basicConfig(
 
 
 ######################################## Resources ########################################
+
+configs = Configs()
+logger.info(f"Configs: {configs}")
 
 global_lock_manager = asyncio.Lock()
 pgvector_lock = asyncio.Lock()
@@ -109,11 +112,11 @@ dots_parser = DotsOCRParser(
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    os.makedirs(configs.OUTPUT_DIR, exist_ok=True)
-    os.makedirs(configs.INPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(INPUT_DIR, exist_ok=True)
 
     logger.remove(0)
-    logger.add(stderr, level="INFO")
+    logger.add(stderr, level=configs.LOG_LEVEL)
 
     await pg_vector_manager.ensure_table_exists()
 
@@ -178,11 +181,12 @@ def sum_token_usage(
 
 @app.post("/status")
 async def status_check(ocr_job_id: str = Form(alias="OCRJobId")):
-    status = job_executor_pool.get_job_status(ocr_job_id)
-    if status is None:
+    job_response = job_executor_pool.get_job_response(ocr_job_id)
+    if job_response is None:
         record = await get_record_pgvector(ocr_job_id)
-        status = record.status
-    return {"status": status}
+        return {"status": record.status}
+
+    return {"status": job_response.status, "task_stats": job_response.task_stats}
 
 
 async def stream_and_upload_generator(job_response: JobResponseModel):
@@ -317,8 +321,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                         "message": "Output files already exist and MD5 matches."
                         " Skipped processing.",
                     }
-                    yield skip_response
-                    return
+                    return skip_response
 
                 if md5_exists or all_files_exist:
                     logger.info(
@@ -366,8 +369,6 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                         )
                         all_paths_to_upload.append(result)
                     else:
-                        total_count = 0
-                        failed_count = 0
                         total_token_usage = {}
                         async for (
                             result,
@@ -375,14 +376,13 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                             token_usage,
                         ) in dots_parser.schedule_pdf_tasks(job_response):
                             sum_token_usage(total_token_usage, token_usage)
-                            total_count += 1
                             if status in ["fallback", "failed"]:
                                 # TODO(tatiana): save failed/fallback task to OCRTable and
                                 # allow partial rerun after fix
-                                pass
-                            if status == "failed":
-                                failed_count += 1
-                                continue
+                                if status == "failed":
+                                    job_response.task_stats.failed_task_count += 1
+                                    continue
+                                job_response.task_stats.fallback_task_count += 1
 
                             all_paths_to_upload.append(result)
                 except Exception as e:
@@ -399,16 +399,19 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                 }
 
                 if job_response.parse_type == "pdf":
-                    if failed_count / total_count > configs.TASK_FAIL_THRESHOLD:
+                    if (
+                        job_response.task_stats.failed_task_count
+                        / job_response.task_stats.total_task_count
+                        > configs.TASK_FAIL_THRESHOLD
+                    ):
                         final_response = {
                             "success": False,
-                            "total_pages": total_count,
+                            "total_pages": job_response.task_stats.total_task_count,
                             "output_s3_path": output_s3_path,
-                            "detail": f"Failed to parse {failed_count} pages "
-                            f"out of {total_count} pages.",
+                            "detail": f"Failed to parse {job_response.task_stats.failed_task_count} pages "
+                            f"out of {job_response.task_stats.total_task_count} pages.",
                         }
-                        yield final_response
-                        return
+                        return final_response
                     # combine all page to upload
                     all_paths_to_upload.sort(key=lambda item: item["page_no"])
                     output_files = {}
@@ -487,25 +490,19 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                     "total_pages": len(all_paths_to_upload),
                     "output_s3_path": output_s3_path,
                 }
-                yield final_response
+                return final_response
 
     except Exception as e:
-        error_msg = json.dumps({"success": False, "detail": str(e)})
-        yield error_msg + "\n"
+        return {"success": False, "detail": str(e)}
 
 
 async def run_job(job: JobResponseModel):
-    async for page_result in stream_and_upload_generator(job):
-        if "page_no" in page_result:
-            # TODO(tatiana): page result not used
-            pass
-        elif not page_result.get("success", False):
-            logger.error(
-                f"Job {job.job_id} failed with: {page_result.get('detail', 'error')}"
-            )
-            raise RuntimeError(
-                f"Job {job.job_id} failed with: {page_result.get('detail', 'error')}"
-            )
+    result = await stream_and_upload_generator(job)
+    if not result.get("success", False):
+        logger.error(f"Job {job.job_id} failed with: {result.get('detail', 'error')}")
+        raise RuntimeError(
+            f"Job {job.job_id} failed with: {result.get('detail', 'error')}"
+        )
 
     logger.success(f"Job {job.job_id} successfully processed.")
 
