@@ -290,6 +290,26 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                         "Skipping processing.",
                         input_s3_path,
                     )
+                    if job_response.status != "completed":
+                        job_response.status = "completed"
+                        job_response.message = "Output files already exist and MD5 matches. Recover pg vector record."
+                        job_response.token_usage = {
+                            "dotsocr": {
+                                "completion_tokens": 0,
+                                "prompt_tokens": 0,
+                                "total_tokens": 0,
+                            },
+                            "InternVL3_5-2B": {
+                                "completion_tokens": 0,
+                                "prompt_tokens": 0,
+                                "total_tokens": 0,
+                            },
+                        }
+                        logging.warning(
+                            f"Job {job_response.job_id} not found in pgvector but output files exist and MD5 matches."
+                            "Updating to completed but token usage can't be recovered and is set to zero."
+                        )
+                        await update_pgvector(job_response)
                     skip_response = {
                         "success": True,
                         "total_pages": 0,
