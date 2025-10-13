@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # Number of concurrent jobs that can run.
-NUM_WORKERS = 4
+NUM_WORKERS = 16
 
 # The max number of concurrent OCR inference requests that can be sent to the ocr model.
 # Increasing this may improve GPU utilization to some extent but at the cost of the model
@@ -31,7 +31,7 @@ OCR_INFERENCE_TASK_QUEUE_MAX_SIZE = 2 * CONCURRENT_OCR_INFERENCE_TASK_LIMIT
 # The number of OCR inference tasks that can be queued. Increase this may improve resource
 # overlapping, but at the cost of memory for buffering the picture blocks identified from
 # the documents.
-DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE = 64
+DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE = 24
 
 OCR_INFERENCE_HOST = "localhost"
 OCR_INFERENCE_PORT = 8000
