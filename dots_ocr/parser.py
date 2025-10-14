@@ -11,10 +11,9 @@ from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.ocr_task import ImageOcrTask, OcrTaskModel, PdfOcrTask
 from app.utils.executor.task_executor_pool import TaskExecutorPool
 from app.utils.storage import StorageManager
+from app.utils.tracing import get_tracer, traced
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
-from dots_ocr.utils.doc_utils import (
-    load_images_from_pdf,
-)
+from dots_ocr.utils.doc_utils import load_images_from_pdf
 from dots_ocr.utils.page_parser import PageParser
 
 
@@ -39,6 +38,7 @@ class DotsOCRParser:
         self._describe_picture_task_executor_pool = describe_picture_task_executor_pool
         self._storage_manager = storage_manager
 
+    @traced(record_return=True)
     async def parse_image(
         self,
         job_response: JobResponseModel,
@@ -52,6 +52,7 @@ class DotsOCRParser:
             output_file_name=job_files.output_file_name,
         )
         task = ImageOcrTask(
+            span=get_tracer().start_span(f"ImageOcrTask {job_response.job_id}"),
             input_path=str(job_files.input_file_path),
             bbox=bbox,
             task_model=task_model,
@@ -197,6 +198,9 @@ class DotsOCRParser:
                     )
                     task = PdfOcrTask(
                         doc[page_index],
+                        span=get_tracer().start_span(
+                            f"PdfOcrTask {job_response.job_id}-{page_index}"
+                        ),
                         task_model=task_model,
                         parser=self.parser,
                         ocr_inference_pool=self._ocr_task_executor_pool,
@@ -216,6 +220,7 @@ class DotsOCRParser:
                                 f"{task.error_msg}"
                             )
                         continue
+                    task.final_success()
                     pbar.update(1)
                     yield task_result, task.status, task.token_usage
 
@@ -238,6 +243,7 @@ class DotsOCRParser:
                                     f"{task.error_msg}"
                                 )
                             continue
+                        task.final_success()
                         pbar.update(1)
                         yield task_result, task.status, task.token_usage
 
@@ -250,6 +256,7 @@ class DotsOCRParser:
                     )
                     logger.error(error_msg)
                     for task in failed_tasks:
+                        task.final_failure(error_msg)
                         yield {
                             "page_no": int(task.task_id)
                         }, task.status, task.token_usage

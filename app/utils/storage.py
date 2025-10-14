@@ -7,6 +7,8 @@ from functools import partial
 import boto3
 from botocore.config import Config
 
+from app.utils.tracing import trace_span_async, traced
+
 
 def parse_s3_path(s3_path: str, is_s3: bool):
     if is_s3:
@@ -38,6 +40,7 @@ class StorageManager:
             config=Config(s3={"addressing_style": "virtual"}, signature_version="s3"),
         )
 
+    @traced()
     async def upload_file(self, bucket, key, local_path, is_s3):
         if not local_path or not os.path.exists(local_path):
             return None
@@ -56,6 +59,7 @@ class StorageManager:
             logging.error(f"Failed to upload {local_path} to s3://{bucket}/{key}: {e}")
             return None
 
+    @traced(record_return=True)
     async def download_file(self, bucket, key, local_path, is_s3):
         if not bucket or not key or not local_path:
             logging.warning("Bucket, key, and local_path must be specified.")
@@ -78,6 +82,7 @@ class StorageManager:
             )
             return None
 
+    @traced()
     async def delete_file(self, bucket, key, is_s3):
         if not bucket or not key:
             logging.warning("Bucket and key must be specified.")
@@ -94,6 +99,7 @@ class StorageManager:
             logging.error(f"Failed to delete s3://{bucket}/{key}: {e}")
             return False
 
+    @traced()
     async def delete_files_in_directory(self, bucket, prefix, is_s3):
         if not bucket or not prefix:
             logging.warning("Bucket and prefix must be specified.")
@@ -138,6 +144,7 @@ class StorageManager:
             logging.error(f"Failed to delete files under s3://{bucket}/{prefix}: {e}")
             return False
 
+    @traced()
     async def check_existing_results_sync(
         self, bucket: str, prefix: str, is_s3: bool
     ) -> tuple[bool, bool]:
@@ -148,6 +155,7 @@ class StorageManager:
         existing_files = 0
         md5_exists = False
 
+        @traced(record_return=True)
         def check_file_exists(client, bucket, key, is_s3):
             try:
                 if is_s3:

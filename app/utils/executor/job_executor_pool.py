@@ -1,8 +1,10 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Awaitable, Callable, Dict, List, Literal, Optional
 
 from loguru import logger
+from opentelemetry import trace
 from pydantic import BaseModel
 
 from app.utils.configs import INPUT_DIR, OUTPUT_DIR
@@ -119,6 +121,9 @@ class JobResponseModel(BaseModel):
     def page_prefix(self):
         return f"{self.output_s3_path}/{self.output_file_name}_page_"
 
+    def __str__(self):
+        return self.model_dump_json()
+
     def transform_to_map(self):
         mapping = {
             "url": self.output_s3_path,
@@ -154,10 +159,12 @@ class Job:
 
     def __init__(
         self,
+        span: trace.Span,
         job_response: JobResponseModel,
         execute: Callable[[JobResponseModel], Awaitable[None]],
         on_status_change: Callable[[JobResponseModel], Awaitable[None]],
     ):
+        self._span = span
         self.job_response = job_response
         self._on_status_change = on_status_change
         self._execute = execute
@@ -170,18 +177,21 @@ class Job:
             await self._set_cancelled()
             return
 
-        try:
-            logger.info(f"Job {self.job_response.job_id} starts execution now.")
-            await self._set_processing()
-            await self._execute(self.job_response)
-            logger.success(f"Job {self.job_response.job_id} successfully processed.")
-            await self._set_finished()
-        except Exception as e:
-            logger.error(
-                f"Job {self.job_response.job_id} failed. Final error: {e}",
-                exc_info=True,
-            )
-            await self._set_failed(e)
+        with trace.use_span(self._span, end_on_exit=False):
+            try:
+                logger.info(f"Job {self.job_response.job_id} starts execution now.")
+                await self._set_processing()
+                await self._execute(self.job_response)
+                logger.success(
+                    f"Job {self.job_response.job_id} successfully processed."
+                )
+                await self._set_finished()
+            except Exception as e:
+                logger.error(
+                    f"Job {self.job_response.job_id} failed. Final error: {e}",
+                    exc_info=True,
+                )
+                await self._set_failed(e)
 
     def cancel(self):
         # TODO(tatiana): handle the cancellation logic here. Now just do a trivial cancellation.
@@ -206,16 +216,22 @@ class Job:
             f"Job failed after multiple retries. Final error: {str(error)}"
         )
         await self._on_status_change(self.job_response)
+        self._span.set_status(trace.Status(trace.StatusCode.ERROR, str(error)))
+        self._span.end()
 
     async def _set_finished(self):
         self.job_response.status = "completed"
         self.job_response.message = "Job completed successfully"
         await self._on_status_change(self.job_response)
+        self._span.set_status(trace.Status(trace.StatusCode.OK))
+        self._span.end()
 
     async def _set_cancelled(self):
         self.job_response.status = "canceled"
         self.job_response.message = "Job is cancelled"
         await self._on_status_change(self.job_response)
+        self._span.set_status(trace.Status(trace.StatusCode.ERROR, "Job is cancelled"))
+        self._span.end()
 
 
 # TODO(tatiana): Make jobs run in parallel?

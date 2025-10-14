@@ -6,12 +6,14 @@ from typing import Literal, Optional
 import fitz
 from loguru import logger
 from openai.types import CompletionUsage
+from opentelemetry import trace
 from PIL import Image
 from pydantic import BaseModel
 
 from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.task_executor_pool import TaskExecutorPool
 from app.utils.storage import StorageManager
+from app.utils.tracing import get_tracer, trace_span_async, traced
 from dots_ocr.model.inference import InferenceTask, OcrInferenceTask
 from dots_ocr.utils.page_parser import PageParser
 
@@ -57,11 +59,13 @@ class OcrTaskStats(BaseModel):
 class OcrTask:
     def __init__(
         self,
+        span: trace.Span,
         task_model: OcrTaskModel,
         parser: PageParser,
         ocr_inference_pool: TaskExecutorPool,
         describe_picture_pool: TaskExecutorPool,
     ):
+        self._span = span
         self._task_model = task_model
         self._stats = OcrTaskStats(status="pending")
         self._ocr_inference_pool = ocr_inference_pool
@@ -97,6 +101,7 @@ class OcrTask:
     def token_usage(self):
         return self._stats.token_usage
 
+    @traced()
     async def _submit_ocr_inference_task(self, task_id, image, prompt):
         task = OcrInferenceTask(
             self._parser.ocr_inference_task_options, task_id, image, prompt
@@ -104,6 +109,7 @@ class OcrTask:
         await self._ocr_inference_pool.add_task(task)
         return task.get_completion_future(), task
 
+    @traced()
     async def _submit_describe_picture_task(self, task_id, image, prompt):
         task = InferenceTask(
             self._parser.describe_picture_task_options, task_id, image, prompt
@@ -111,9 +117,11 @@ class OcrTask:
         await self._describe_picture_pool.add_task(task)
         return task.get_completion_future(), task
 
+    @traced()
     async def _process_ocr_results(
         self, ocr_results, origin_image, image, scale_factor
     ):
+        self._span.add_event("start process ocr results")
         start_time = time.perf_counter()
         try:
             cells = await self._parser.process_results(
@@ -147,8 +155,12 @@ class OcrTask:
             f"Page {self._page_index} of doc {self._task_model.original_file_uri} "
             f"post-processed in {elapsed:.4f} seconds: {cells}"
         )
+        self._span.add_event("end process ocr results")
+        self._span.set_attribute("post_process_ocr_results_wall_time_s", elapsed)
+
         return cells
 
+    @traced()
     async def _describe_pictures_in_page(self, cells: dict, origin_image: Image.Image):
         prompt = self._parser.picture_description_prompt
         futures: list[asyncio.Future] = []
@@ -198,25 +210,43 @@ class OcrTask:
             self._stats.add_token_usage(*task.success_usage)
             picture_block["text"] = future.result().strip()
 
+    def final_success(self):
+        self._span.end()
+
+    def final_failure(self, error: str):
+        self._span.set_status(trace.Status(trace.StatusCode.ERROR, error))
+        self._span.end()
+
     async def run(self):
         self._stats.status = "running"
-        try:
-            self._stats.attempt += 1
-            start_time = time.perf_counter()
-            logger.debug(
-                f"Start processing page {self._page_index} of "
-                f"doc {self._task_model.original_file_uri} (attempt {self._stats.attempt})"
-            )
-            result = await self._run()
-            self._stats.task_execution_time = time.perf_counter() - start_time
-            if self._stats.status != "fallback":
-                self._stats.status = "finished"
-            return result
-        except Exception as e:
-            logger.error(f"Error running OCR task: {e}", exc_info=True)
-            self._stats.status = "failed"
-            self._stats.error_msg = str(e)
-            return None
+        with trace.use_span(self._span, end_on_exit=False):
+            with get_tracer().start_as_current_span(
+                f"attempt-{self._stats.attempt}"
+            ) as span:
+                try:
+                    self._stats.attempt += 1
+                    start_time = time.perf_counter()
+                    logger.debug(
+                        f"Start processing page {self._page_index} of "
+                        f"doc {self._task_model.original_file_uri} (attempt {self._stats.attempt})"
+                    )
+                    result = await self._run()
+                    self._stats.task_execution_time = time.perf_counter() - start_time
+                    if self._stats.status != "fallback":
+                        self._stats.status = "finished"
+                    span.set_attribute(
+                        "task_execution_wall_time_s", self._stats.task_execution_time
+                    )
+                    span.set_attribute("task_status", self._stats.status)
+                    span.add_event("Finished the OCR task")
+                    return result
+                except Exception as e:
+                    logger.error(f"Error running OCR task: {e}", exc_info=True)
+                    self._stats.status = "failed"
+                    self._stats.error_msg = str(e)
+                    span.set_attribute("task_status", self._stats.status)
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                    return None
 
     async def _run(self):
         pass
@@ -231,6 +261,7 @@ class PdfOcrTask(OcrTask):
         self._page = page
         self._storage_manager = storage_manager
 
+    @traced()
     async def _upload_results(self, result: dict):
         page_upload_tasks = []
         paths_to_upload = {
@@ -257,6 +288,7 @@ class PdfOcrTask(OcrTask):
         paths_to_upload["page_no"] = self._page_index
         return paths_to_upload
 
+    @traced()
     async def _run(self):
         """
         Returns:
@@ -285,14 +317,17 @@ class PdfOcrTask(OcrTask):
             logger.error(f"Error submitting OCR inference task: {e}")
             raise
 
-        try:
-            inference_result = await inference_future
-            if inference_task.is_fallback:
-                self._stats.status = "fallback"
-            self._stats.add_token_usage(*inference_task.success_usage)
-        except Exception as e:
-            logger.error(f"Error getting OCR inference result: {e}")
-            raise
+        async with trace_span_async(
+            f"wait for OCR inference result for page {self._page_index}"
+        ):
+            try:
+                inference_result = await inference_future
+                if inference_task.is_fallback:
+                    self._stats.status = "fallback"
+                self._stats.add_token_usage(*inference_task.success_usage)
+            except Exception as e:
+                logger.error(f"Error getting OCR inference result: {e}")
+                raise
 
         try:
             logger.trace(
@@ -343,6 +378,7 @@ class ImageOcrTask(OcrTask):
         self._input_path = input_path
         self._bbox = bbox
 
+    @traced()
     async def _run(self):
         origin_image, image, prompt, scale_factor = (
             await self._parser.prepare_image_for_ocr(
