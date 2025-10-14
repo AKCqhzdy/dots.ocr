@@ -8,6 +8,7 @@ from fitz import Page
 from PIL import Image
 from pydantic import BaseModel
 
+from app.utils.tracing import traced
 from dots_ocr.model.inference import (
     InferenceTask,
     InferenceTaskOptions,
@@ -225,6 +226,7 @@ class PageParser:
             cells_with_size["page_no"] = page_idx
         return cells_with_size
 
+    @traced()
     async def save_results(
         self, cells_with_size, save_dir, save_name, image_origin, scale_factor=1.0
     ):
@@ -413,6 +415,7 @@ class PageParser:
             "image",
         )
 
+    @traced()
     def prepare_pdf_page(self, page: Page, prompt_mode: str, bbox=None):
         """Synchronous, CPU-bound part of image preparation."""
         origin_image, scale_factor = fitz_doc_to_image(page, target_dpi=self.dpi)

@@ -30,15 +30,11 @@ from loguru import logger
 from openai.types import CompletionUsage
 
 from app.utils.configs import INPUT_DIR, OUTPUT_DIR, Configs
-from app.utils.executor import (
-    Job,
-    JobExecutorPool,
-    JobResponseModel,
-    TaskExecutorPool,
-)
+from app.utils.executor import Job, JobExecutorPool, JobResponseModel, TaskExecutorPool
 from app.utils.hash import compute_md5_file, compute_md5_string
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
+from app.utils.tracing import get_tracer, setup_tracing, trace_span_async, traced
 from dots_ocr.model.inference import InferenceTaskOptions
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
@@ -140,7 +136,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+setup_tracing(
+    app,
+    configs.DOTSOCR_OTEL_SERVICE_NAME,
+    configs.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+    configs.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT,
+)
 
+
+@traced()
 async def update_pgvector(job: JobResponseModel):
     """Insert a new job or update an existing job in the PG database.
 
@@ -160,6 +164,7 @@ async def update_pgvector(job: JobResponseModel):
         # await pg_vector_manager.flush()
 
 
+@traced(record_return=True)
 async def get_record_pgvector(job_id: str) -> OCRTable:
     async with pgvector_lock:
         # await pg_vector_manager.ensure_table_exists()
@@ -189,6 +194,7 @@ async def status_check(ocr_job_id: str = Form(alias="OCRJobId")):
     return {"status": job_response.status, "task_stats": job_response.task_stats}
 
 
+@traced()
 async def stream_and_upload_generator(job_response: JobResponseModel):
     input_s3_path = job_response.input_s3_path
     output_s3_path = job_response.output_s3_path
@@ -275,13 +281,17 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                             + compute_md5_file(str(job_files.input_file_path))
                         )
                         logging.info(
-                            "MD5 hash of input file %s: %s", input_s3_path, file_md5
+                            "MD5 hash of input file %s: %s",
+                            input_s3_path,
+                            file_md5,
                         )
                         if not job_response.overwrite:
                             md5_match = md5_exists and file_md5 == existing_md5
                     except Exception as e:
                         logging.error(
-                            "Failed to compute MD5 hash for %s: %s", input_s3_path, e
+                            "Failed to compute MD5 hash for %s: %s",
+                            input_s3_path,
+                            e,
                         )
                         raise RuntimeError(
                             f"Failed to compute MD5 hash: {str(e)}"
@@ -370,21 +380,22 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                         all_paths_to_upload.append(result)
                     else:
                         total_token_usage = {}
-                        async for (
-                            result,
-                            status,
-                            token_usage,
-                        ) in dots_parser.schedule_pdf_tasks(job_response):
-                            sum_token_usage(total_token_usage, token_usage)
-                            if status in ["fallback", "failed"]:
-                                # TODO(tatiana): save failed/fallback task to OCRTable and
-                                # allow partial rerun after fix
-                                if status == "failed":
-                                    job_response.task_stats.failed_task_count += 1
-                                    continue
-                                job_response.task_stats.fallback_task_count += 1
+                        async with trace_span_async("schedule_pdf_tasks") as span:
+                            async for (
+                                result,
+                                status,
+                                token_usage,
+                            ) in dots_parser.schedule_pdf_tasks(job_response):
+                                sum_token_usage(total_token_usage, token_usage)
+                                if status in ["fallback", "failed"]:
+                                    # TODO(tatiana): save failed/fallback task to OCRTable and
+                                    # allow partial rerun after fix
+                                    if status == "failed":
+                                        job_response.task_stats.failed_task_count += 1
+                                        continue
+                                    job_response.task_stats.fallback_task_count += 1
 
-                            all_paths_to_upload.append(result)
+                                    all_paths_to_upload.append(result)
                 except Exception as e:
                     logging.error("Error during parsing pages: %s", e, exc_info=True)
                     raise
@@ -496,6 +507,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
         return {"success": False, "detail": str(e)}
 
 
+@traced()
 async def run_job(job: JobResponseModel):
     result = await stream_and_upload_generator(job)
     if not result.get("success", False):
@@ -586,6 +598,7 @@ async def parse_file(
     await update_pgvector(job_response)
     await job_executor_pool.add_job(
         Job(
+            get_tracer().start_span("async_job"),
             job_response,
             execute=run_job,
             on_status_change=update_pgvector,

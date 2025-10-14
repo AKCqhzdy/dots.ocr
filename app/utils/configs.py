@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from pydantic_settings import BaseSettings
 
@@ -57,6 +57,15 @@ class Configs(BaseSettings):
     TASK_FAIL_THRESHOLD: float = 0.1
 
     LOG_LEVEL: str = "INFO"
+
+    DOTSOCR_OTEL_SERVICE_NAME: str = "dots.ocr"
+    # Endpoint URL for trace data only, with an optionally-specified port number.
+    # If not provided, the tracing is disabled.
+    # Example value:
+    #   gRPC: "http://localhost:4317"
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: Optional[str] = None
+    # The timeout value for all outgoing traces in milliseconds. Default is 10 seconds.
+    OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: int = 10_000  # 10 seconds
 
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
