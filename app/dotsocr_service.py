@@ -395,7 +395,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                         continue
                                     job_response.task_stats.fallback_task_count += 1
 
-                                    all_paths_to_upload.append(result)
+                                all_paths_to_upload.append(result)
                 except Exception as e:
                     logging.error("Error during parsing pages: %s", e, exc_info=True)
                     raise
