@@ -138,7 +138,7 @@ app = FastAPI(
 
 setup_tracing(
     app,
-    configs.TRACE_SERVICE_NAME,
+    configs.DOTSOCR_OTEL_SERVICE_NAME,
     configs.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
     configs.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT,
 )

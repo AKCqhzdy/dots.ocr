@@ -58,7 +58,7 @@ class Configs(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
-    TRACE_SERVICE_NAME: str = "dots.ocr"
+    DOTSOCR_OTEL_SERVICE_NAME: str = "dots.ocr"
     # Endpoint URL for trace data only, with an optionally-specified port number.
     # If not provided, the tracing is disabled.
     # Example value:
