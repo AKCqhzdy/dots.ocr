@@ -1,5 +1,5 @@
 import asyncio
-import logging
+from loguru import logger
 import os
 import re
 from functools import partial
@@ -28,7 +28,7 @@ class StorageManager:
         access_key_id = os.getenv("OSS_ACCESS_KEY_ID")
         secret_access_key = os.getenv("OSS_ACCESS_KEY_SECRET")
         if not all([endpoint, access_key_id, secret_access_key]):
-            logging.warning(
+            logger.warning(
                 "OSS environment variables (OSS_ENDPOINT, OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET) are not fully set. OSS client may not work."
             )
 
@@ -52,17 +52,17 @@ class StorageManager:
                     Bucket=bucket, Key=key, Filename=local_path
                 )
             s3_full_path = f"{'s3' if is_s3 else 'oss'}://{bucket}/{key}"
-            logging.info(f"Successfully uploaded {local_path} to {s3_full_path}")
+            logger.info(f"Successfully uploaded {local_path} to {s3_full_path}")
             # os.remove(local_path)
             return s3_full_path
         except Exception as e:
-            logging.error(f"Failed to upload {local_path} to s3://{bucket}/{key}: {e}")
+            logger.error(f"Failed to upload {local_path} to s3://{bucket}/{key}: {e}")
             return None
 
     @traced(record_return=True)
     async def download_file(self, bucket, key, local_path, is_s3):
         if not bucket or not key or not local_path:
-            logging.warning("Bucket, key, and local_path must be specified.")
+            logger.warning("Bucket, key, and local_path must be specified.")
             return None
         try:
             if is_s3:
@@ -74,10 +74,10 @@ class StorageManager:
                     Bucket=bucket, Key=key, Filename=local_path
                 )
             s3_full_path = f"{'s3' if is_s3 else 'oss'}://{bucket}/{key}"
-            logging.info(f"Successfully downloaded {local_path} to {s3_full_path}")
+            logger.info(f"Successfully downloaded {local_path} to {s3_full_path}")
             return s3_full_path
         except Exception as e:
-            logging.error(
+            logger.error(
                 f"Failed to download s3://{bucket}/{key} to {local_path}: {e}"
             )
             return None
@@ -85,7 +85,7 @@ class StorageManager:
     @traced()
     async def delete_file(self, bucket, key, is_s3):
         if not bucket or not key:
-            logging.warning("Bucket and key must be specified.")
+            logger.warning("Bucket and key must be specified.")
             return False
         try:
             if is_s3:
@@ -93,16 +93,16 @@ class StorageManager:
             else:
                 self.s3_oss_client.delete_object(Bucket=bucket, Key=key)
             s3_full_path = f"{'s3' if is_s3 else 'oss'}://{bucket}/{key}"
-            logging.info(f"Successfully deleted {s3_full_path}")
+            logger.info(f"Successfully deleted {s3_full_path}")
             return True
         except Exception as e:
-            logging.error(f"Failed to delete s3://{bucket}/{key}: {e}")
+            logger.error(f"Failed to delete s3://{bucket}/{key}: {e}")
             return False
 
     @traced()
     async def delete_files_in_directory(self, bucket, prefix, is_s3):
         if not bucket or not prefix:
-            logging.warning("Bucket and prefix must be specified.")
+            logger.warning("Bucket and prefix must be specified.")
             return False
 
         def delete_objects_sync(client, bucket, prefix):
@@ -134,14 +134,14 @@ class StorageManager:
             )
 
             if count > 0:
-                logging.info(
+                logger.info(
                     f"Successfully deleted {count} files under s3://{bucket}/{prefix}"
                 )
             else:
-                logging.info(f"No files found under s3://{bucket}/{prefix} to delete.")
+                logger.info(f"No files found under s3://{bucket}/{prefix} to delete.")
             return True
         except Exception as e:
-            logging.error(f"Failed to delete files under s3://{bucket}/{prefix}: {e}")
+            logger.error(f"Failed to delete files under s3://{bucket}/{prefix}: {e}")
             return False
 
     @traced()

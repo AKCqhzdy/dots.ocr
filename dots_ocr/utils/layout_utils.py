@@ -1,7 +1,7 @@
 import json
 from io import BytesIO
 from typing import Dict, List
-import logging
+from loguru import logger
 
 import fitz
 from PIL import Image
@@ -187,10 +187,10 @@ def post_process_cells(
             )
         
         if bbox[2] > input_width:
-            logging.warning(f"bbox x1 {bbox[2]} exceeds image width {input_width}, adjusted.")
+            logger.warning(f"bbox x1 {bbox[2]} exceeds image width {input_width}, adjusted.")
             bbox[2] = input_width
         if bbox[3] > input_height:
-            logging.warning(f"bbox y1 {bbox[3]} exceeds image height {input_height}, adjusted.")
+            logger.warning(f"bbox y1 {bbox[3]} exceeds image height {input_height}, adjusted.")
             bbox[3] = input_height
 
     assert isinstance(cells, list) and len(cells) > 0 and isinstance(cells[0], dict)

@@ -15,7 +15,6 @@ File resources:
 
 import asyncio
 import json
-import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -41,15 +40,6 @@ from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
 from dots_ocr.utils.page_parser import PageParser, ParseOptions
 
-logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-# when level is set to DEBUG, ignore less important logs from these libraries
-logging.getLogger("httpx").setLevel(logging.INFO)
-logging.getLogger("httpcore").setLevel(logging.INFO)
-logging.getLogger("openai").setLevel(logging.INFO)
-logging.getLogger('botocore').setLevel(logging.INFO)
-logging.getLogger('boto3').setLevel(logging.INFO)
 
 ######################################## Resources ########################################
 
@@ -288,18 +278,14 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                             + ":"
                             + compute_md5_file(str(job_files.input_file_path))
                         )
-                        logging.info(
-                            "MD5 hash of input file %s: %s",
-                            input_s3_path,
-                            file_md5,
+                        logger.info(
+                            f"MD5 hash of input file {input_s3_path}: {file_md5}",
                         )
                         if not job_response.overwrite:
                             md5_match = md5_exists and file_md5 == existing_md5
                     except Exception as e:
-                        logging.error(
-                            "Failed to compute MD5 hash for %s: %s",
-                            input_s3_path,
-                            e,
+                        logger.error(
+                            f"Failed to compute MD5 hash for {input_s3_path}: {str(e)}",
                         )
                         raise RuntimeError(
                             f"Failed to compute MD5 hash: {str(e)}"
@@ -307,10 +293,9 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
 
                 # If overwrite is disabled and md5 matches, try to reuse existing output
                 if not job_response.overwrite and md5_match and all_files_exist:
-                    logging.info(
-                        "Output files already exist in S3 and MD5 matches for %s. "
+                    logger.info(
+                        f"Output files already exist in S3 and MD5 matches for {input_s3_path}. ",
                         "Skipping processing.",
-                        input_s3_path,
                     )
                     if job_response.status != "completed":
                         job_response.status = "completed"
@@ -327,7 +312,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 "total_tokens": 0,
                             },
                         }
-                        logging.warning(
+                        logger.warning(
                             f"Job {job_response.job_id} not found in pgvector but output files exist and MD5 matches."
                             "Updating to completed but token usage can't be recovered and is set to zero."
                         )
@@ -348,7 +333,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                         f" overwrite {job_response.overwrite}, md5 match {md5_match}.",
                     )
                 # clean the whole output directory in S3 for safety
-                # logging.info(
+                # logger.info(
                 #     f"No MD5 hash found for {input_s3_path}. "
                 #     f"Cleaning output directory {job_local_files.remote_output_bucket}/{output_key}/."
                 # )
@@ -362,7 +347,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                 if not md5_match:
                     with open(job_files.output_md5_path, "w", encoding="utf-8") as f:
                         f.write(file_md5)
-                    logging.info("Saved MD5 hash to %s", job_files.output_md5_path)
+                    logger.info("Saved MD5 hash to {job_files.output_md5_path}")
 
                     # Upload MD5 hash file to S3/OSS
                     try:
@@ -373,8 +358,8 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                             is_s3,
                         )
                     except Exception as e:
-                        logging.warning(
-                            "Failed to upload MD5 hash file to s3/oss: %s", e
+                        logger.warning(
+                            f"Failed to upload MD5 hash file to s3/oss: {str(e)}",
                         )
 
                 # parse the PDF file and upload each page's output files
@@ -405,7 +390,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
 
                                 all_paths_to_upload.append(result)
                 except Exception as e:
-                    logging.error("Error during parsing pages: %s", e, exc_info=True)
+                    logger.exception(f"Error during parsing pages: {e}")
                     raise
 
                 # TODO(tatiana): if job is rerun (e.g., due to overwrite), we need to accumulate
@@ -627,7 +612,10 @@ async def parse_file(
         describe_picture=describe_picture,
         overwrite=overwrite,
     )
-    logging.info("Job %s created. %s", ocr_job_id, job_response)
+
+    logger.info(
+        f"Job {ocr_job_id} created. {job_response}"
+    )
     await update_pgvector(job_response)
     await job_executor_pool.add_job(
         Job(
@@ -637,7 +625,6 @@ async def parse_file(
             on_status_change=update_pgvector,
         )
     )
-
     return JSONResponse({"OCRJobId": ocr_job_id}, status_code=200)
 
 

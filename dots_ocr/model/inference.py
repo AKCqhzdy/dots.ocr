@@ -3,6 +3,7 @@ import json
 import os
 import time
 from typing import List, Optional, Union
+from loguru import logger
 
 import httpx
 from loguru import logger
@@ -152,6 +153,8 @@ class InferenceTask:
             }
         ]
         try:
+            start_time = time.perf_counter()
+            logger.debug(f"Sending request {self._task_id} to vLLM model{self._options.model_name}: image size: {self.size()/1024:.2f} KB. image resolution: {self._image.width}x{self._image.height}. ")
             response = await self._client.chat.completions.create(
                 messages=messages,
                 model=self._options.model_name,
@@ -159,6 +162,12 @@ class InferenceTask:
                 temperature=self._options.temperature,
                 top_p=self._options.top_p,
                 timeout=self._options.get_timeout(self._stats.attempt_num),
+            )
+            self._stats.success_usage = response.usage
+            end_time = time.perf_counter()
+            logger.debug(f"Received response for request {self._task_id} from vLLM model{self._options.model_name} in {end_time - start_time:.2f} seconds")
+            logger.debug(
+                f"vLLM token usage for request {self._task_id}: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, total={response.usage.total_tokens}"
             )
             self._stats.success_usage = response.usage
             response = response.choices[0].message.content
