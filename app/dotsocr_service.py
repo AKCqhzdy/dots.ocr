@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from sys import stderr
+import shutil
 
 import httpx
 import uvicorn
@@ -41,9 +42,14 @@ from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
 from dots_ocr.utils.page_parser import PageParser, ParseOptions
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
 )
-
+# when level is set to DEBUG, ignore less important logs from these libraries
+logging.getLogger("httpx").setLevel(logging.INFO)
+logging.getLogger("httpcore").setLevel(logging.INFO)
+logging.getLogger("openai").setLevel(logging.INFO)
+logging.getLogger('botocore').setLevel(logging.INFO)
+logging.getLogger('boto3').setLevel(logging.INFO)
 
 ######################################## Resources ########################################
 
@@ -507,6 +513,31 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
 
     except Exception as e:
         return {"success": False, "detail": str(e)}
+
+
+    finally:
+        if configs.CLEANUP_LOCAL:
+            input_file_path = job_files.input_file_path
+            output_dir_path = job_files.output_dir_path
+            if input_file_path and input_file_path.exists():
+                logger.info(f"Cleaning up local input file for job {job_response.job_id}: {input_file_path}")
+                try:
+                    input_file_path.unlink()
+                except Exception as e:
+                    logger.error(
+                        f"An error occurred during file cleanup for job {job_response.job_id}: {e}",
+                        exc_info=True
+                    )
+
+            if output_dir_path and output_dir_path.exists():
+                logger.info(f"Cleaning up local root directory for job {job_response.job_id}: {output_dir_path}")
+                try:
+                    shutil.rmtree(output_dir_path)
+                except Exception as e:
+                    logger.error(
+                        f"An error occurred during directory cleanup for job {job_response.job_id}: {e}",
+                        exc_info=True
+                    )
 
 
 @traced()
