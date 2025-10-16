@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.task_executor_pool import TaskExecutorPool
 from app.utils.storage import StorageManager
-from app.utils.tracing import get_tracer, trace_span_async, traced
+from app.utils.tracing import get_tracer, start_child_span, traced
 from dots_ocr.model.inference import InferenceTask, OcrInferenceTask
 from dots_ocr.utils.page_parser import PageParser
 
@@ -104,7 +104,11 @@ class OcrTask:
     @traced()
     async def _submit_ocr_inference_task(self, task_id, image, prompt):
         task = OcrInferenceTask(
-            self._parser.ocr_inference_task_options, task_id, image, prompt
+            start_child_span(f"OcrInferenceTask {task_id}"),
+            self._parser.ocr_inference_task_options,
+            task_id,
+            image,
+            prompt,
         )
         await self._ocr_inference_pool.add_task(task)
         return task.get_completion_future(), task
@@ -112,7 +116,11 @@ class OcrTask:
     @traced()
     async def _submit_describe_picture_task(self, task_id, image, prompt):
         task = InferenceTask(
-            self._parser.describe_picture_task_options, task_id, image, prompt
+            start_child_span(f"DescribePictureTask {task_id}"),
+            self._parser.describe_picture_task_options,
+            task_id,
+            image,
+            prompt,
         )
         await self._describe_picture_pool.add_task(task)
         return task.get_completion_future(), task
@@ -317,17 +325,14 @@ class PdfOcrTask(OcrTask):
             logger.error(f"Error submitting OCR inference task: {e}")
             raise
 
-        async with trace_span_async(
-            f"wait for OCR inference result for page {self._page_index}"
-        ):
-            try:
-                inference_result = await inference_future
-                if inference_task.is_fallback:
-                    self._stats.status = "fallback"
-                self._stats.add_token_usage(*inference_task.success_usage)
-            except Exception as e:
-                logger.error(f"Error getting OCR inference result: {e}")
-                raise
+        try:
+            inference_result = await inference_future
+            if inference_task.is_fallback:
+                self._stats.status = "fallback"
+            self._stats.add_token_usage(*inference_task.success_usage)
+        except Exception as e:
+            logger.error(f"Error getting OCR inference result: {e}")
+            raise
 
         try:
             logger.trace(
