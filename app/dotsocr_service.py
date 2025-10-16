@@ -189,6 +189,8 @@ async def status_check(ocr_job_id: str = Form(alias="OCRJobId")):
     job_response = job_executor_pool.get_job_response(ocr_job_id)
     if job_response is None:
         record = await get_record_pgvector(ocr_job_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Job not found")
         return {"status": record.status}
 
     return {"status": job_response.status, "task_stats": job_response.task_stats}
@@ -692,6 +694,8 @@ async def token_usage(ocr_job_id: str):
     job_response = job_executor_pool.get_job_response(ocr_job_id)
     if job_response is None:
         record = await get_record_pgvector(ocr_job_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Job not found")
         return record.tokenUsage
     return job_response.token_usage
 
