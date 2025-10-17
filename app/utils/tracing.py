@@ -65,6 +65,16 @@ def setup_tracing(
 
     _tracer = trace.get_tracer(__name__)
 
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+    SQLAlchemyInstrumentor().instrument(
+        tracer_provider=trace.get_tracer_provider(),
+    )
+
+    from opentelemetry.instrumentation.openai_v2 import OpenAIInstrumentor
+
+    OpenAIInstrumentor().instrument()
+
     FastAPIInstrumentor.instrument_app(
         app=app,
         tracer_provider=trace.get_tracer_provider(),
@@ -81,6 +91,18 @@ def get_tracer() -> trace.Tracer:
     if _tracer is None:
         raise RuntimeError("Tracer is not initialized. Call setup_tracing first.")
     return _tracer
+
+
+def start_child_span(name: str, parent_span: Optional[trace.Span] = None) -> trace.Span:
+    """
+    Start and return a child span of the given parent span.
+    If parent_span is None, starts a new span with current context.
+    """
+    tracer = get_tracer()
+    if parent_span is not None and parent_span.get_span_context().is_valid:
+        return tracer.start_span(name, context=trace.set_span_in_context(parent_span))
+    else:
+        return tracer.start_span(name)
 
 
 @contextmanager

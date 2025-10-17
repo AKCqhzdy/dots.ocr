@@ -8,7 +8,7 @@ from fitz import Page
 from PIL import Image
 from pydantic import BaseModel
 
-from app.utils.tracing import traced
+from app.utils.tracing import start_child_span, traced
 from dots_ocr.model.inference import (
     InferenceTask,
     InferenceTaskOptions,
@@ -269,13 +269,21 @@ class PageParser:
 
     async def _inference_with_vllm(self, image, prompt):
         task = OcrInferenceTask(
-            self._ocr_inference_task_options, "ocr_inference_task", image, prompt
+            start_child_span("OcrInferenceTask", None),
+            self._ocr_inference_task_options,
+            "ocr_inference_task",
+            image,
+            prompt,
         )
         return await task.inference_with_vllm()
 
     async def _inference_with_vllm_intern_vl(self, image, prompt):
         task = InferenceTask(
-            self._describe_picture_task_options, "describe_picture_task", image, prompt
+            start_child_span("InferenceTask", None),
+            self._describe_picture_task_options,
+            "describe_picture_task",
+            image,
+            prompt,
         )
         return await task.inference_with_vllm()
 
