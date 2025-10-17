@@ -1,6 +1,7 @@
 import json
 from io import BytesIO
 from typing import Dict, List
+from loguru import logger
 
 import fitz
 from PIL import Image
@@ -174,6 +175,24 @@ def post_process_cells(
     Returns:
         A list of post-processed cells.
     """
+
+    # check bbox
+    for cell in cells:
+        if "bbox" not in cell:
+            raise ValueError("Each cell must contain a 'bbox' key.")
+        bbox = cell["bbox"]
+        if not (isinstance(bbox, list) and len(bbox) == 4 and bbox[0] < bbox[2] and bbox[1] < bbox[3]):
+            raise ValueError(
+                "Each 'bbox' must be a list of four numbers [x0, y0, x1, y1] with x0 < x1 and y0 < y1."
+            )
+        
+        if bbox[2] > input_width:
+            logger.warning(f"bbox x1 {bbox[2]} exceeds image width {input_width}, adjusted.")
+            bbox[2] = input_width
+        if bbox[3] > input_height:
+            logger.warning(f"bbox y1 {bbox[3]} exceeds image height {input_height}, adjusted.")
+            bbox[3] = input_height
+
     assert isinstance(cells, list) and len(cells) > 0 and isinstance(cells[0], dict)
     min_pixels = min_pixels or MIN_PIXELS
     max_pixels = max_pixels or MAX_PIXELS

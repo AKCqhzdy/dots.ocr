@@ -1,5 +1,5 @@
 import asyncio
-import logging
+from loguru import logger
 import os
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -57,20 +57,20 @@ class PGVector:
         """
         session_maker = await self.get_session_maker()
 
-        logging.debug(
+        logger.debug(
             f"Waiting to acquire semaphore. Available: {self._semaphore._value}"
         )
         async with self._semaphore:
-            logging.debug("Semaphore acquired. Getting session from pool.")
+            logger.debug("Semaphore acquired. Getting session from pool.")
             async with session_maker() as session:
                 try:
                     yield session
                 except Exception:
-                    logging.error(
+                    logger.error(
                         "Exception occurred within managed session, rollback will be triggered."
                     )
                     raise
-        logging.debug("Semaphore released.")
+        logger.debug("Semaphore released.")
 
     def get_connection_string(self):
         """PostgreSQL connection string"""
@@ -90,9 +90,9 @@ class PGVector:
             engine = await self.ensure_engine()
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
-            logging.info("Successfully ensured OCR table exists")
+            logger.info("Successfully ensured OCR table exists")
         except Exception as e:
-            logging.error(f"Error creating table: {e}")
+            logger.error(f"Error creating table: {e}")
             raise
 
     async def upsert_record(self, record: OCRTable):
@@ -110,10 +110,10 @@ class PGVector:
 
                 await session.execute(stmt)
                 await session.commit()
-                logging.info(f"Successfully upserted record with id: {record.id}")
+                logger.info(f"Successfully upserted record with id: {record.id}")
                 return True
         except Exception as e:
-            logging.error(f"Error upserting record: {e}")
+            logger.error(f"Error upserting record: {e}")
             raise
 
     async def get_record_by_id(self, record_id: str) -> Optional[OCRTable]:
@@ -125,13 +125,13 @@ class PGVector:
                 record = result.scalar_one_or_none()
 
                 if record:
-                    logging.info(f"Successfully retrieved record with id: {record_id}")
+                    logger.info(f"Successfully retrieved record with id: {record_id}")
                 else:
-                    logging.info(f"No record found with id: {record_id}")
+                    logger.info(f"No record found with id: {record_id}")
 
                 return record
         except Exception as e:
-            logging.error(f"Error retrieving record by id {record_id}: {e}")
+            logger.error(f"Error retrieving record by id {record_id}: {e}")
             raise
 
     async def update_record(self, record_id: str, updates: OCRTable) -> bool:
@@ -148,13 +148,13 @@ class PGVector:
                 await session.commit()
 
                 if result.rowcount > 0:
-                    logging.info(f"Successfully updated record with id: {record_id}")
+                    logger.info(f"Successfully updated record with id: {record_id}")
                     return True
                 else:
-                    logging.warning(f"No record found to update with id: {record_id}")
+                    logger.warning(f"No record found to update with id: {record_id}")
                     return False
         except Exception as e:
-            logging.error(f"Error updating record {record_id}: {e}")
+            logger.error(f"Error updating record {record_id}: {e}")
             await session.rollback()
             raise
 
@@ -167,13 +167,13 @@ class PGVector:
                 await session.commit()
 
                 if result.rowcount > 0:
-                    logging.info(f"Successfully deleted record with id: {record_id}")
+                    logger.info(f"Successfully deleted record with id: {record_id}")
                     return True
                 else:
-                    logging.warning(f"No record found to delete with id: {record_id}")
+                    logger.warning(f"No record found to delete with id: {record_id}")
                     return False
         except Exception as e:
-            logging.error(f"Error deleting record {record_id}: {e}")
+            logger.error(f"Error deleting record {record_id}: {e}")
             await session.rollback()
             raise
 
@@ -182,9 +182,9 @@ class PGVector:
         try:
             async with self.managed_session() as session:
                 await session.flush()
-                logging.info("Successfully flushed the session")
+                logger.info("Successfully flushed the session")
         except Exception as e:
-            logging.error(f"Error flushing session: {e}")
+            logger.error(f"Error flushing session: {e}")
             raise
 
     async def close(self):
@@ -192,7 +192,7 @@ class PGVector:
         try:
             if self.engine:
                 await self.engine.dispose()
-            logging.info("Successfully closed database connections")
+            logger.info("Successfully closed database connections")
         except Exception as e:
-            logging.error(f"Error closing database connections: {e}")
+            logger.error(f"Error closing database connections: {e}")
             raise
