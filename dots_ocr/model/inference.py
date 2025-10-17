@@ -91,6 +91,7 @@ class InferenceTask:
     async def process(self):
         with trace.use_span(self._span, end_on_exit=True):
             while self._stats.attempt_num < self._options.max_attempts:
+                self._span.add_event(f"attempt-{self._stats.attempt_num}")
                 with get_tracer().start_as_current_span(
                     f"attempt-{self._stats.attempt_num}"
                 ) as span:
