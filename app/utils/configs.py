@@ -67,6 +67,7 @@ class Configs(BaseSettings):
     # The timeout value for all outgoing traces in milliseconds. Default is 10 seconds.
     OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: int = 10_000  # 10 seconds
 
+    # Whether to delete local result files after each job is completed.
     CLEANUP_LOCAL: bool = True
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
