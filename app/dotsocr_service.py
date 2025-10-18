@@ -380,10 +380,10 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 token_usage,
                             ) in dots_parser.schedule_pdf_tasks(job_response):
                                 sum_token_usage(total_token_usage, token_usage)
-                                if status in ["fallback", "failed"]:
+                                if status in ["fallback", "timeout", "failed"]:
                                     # TODO(tatiana): save failed/fallback task to OCRTable and
                                     # allow partial rerun after fix
-                                    if status == "failed":
+                                    if status == "failed" or status == "timeout":
                                         job_response.task_stats.failed_task_count += 1
                                         continue
                                     job_response.task_stats.fallback_task_count += 1
