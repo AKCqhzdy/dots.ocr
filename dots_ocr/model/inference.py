@@ -39,7 +39,10 @@ class InferenceTaskOptions(BaseModel):
 
 class InferenceTaskStats(BaseModel):
     success_usage: Optional[CompletionUsage] = None
+    # at present, is_fallback only will be set to True when we use _fallback_ocr() in the last attempt.
+    # is _fallback_ocr() also timeout, is_timeout will be set to True in this function.
     is_fallback: bool = False
+    is_timeout: bool = False
     attempt_num: int = 0
 
 
@@ -81,6 +84,10 @@ class InferenceTask:
     @property
     def is_fallback(self) -> bool:
         return self._stats.is_fallback
+
+    @property
+    def is_timeout(self) -> bool:
+        return self._stats.is_timeout
 
     # Here we do not count input tokens for failures because now the model
     # is self-hosted and do not incur actual cost.
@@ -224,7 +231,12 @@ class OcrInferenceTask(InferenceTask):
         self._stats.is_fallback = True
         prompt = dict_promptmode_to_prompt["prompt_ocr"]
         # This can still timeout. Consider a better fallback approach?
-        result = await self.inference_with_vllm(prompt)
+        try:
+            result = await self.inference_with_vllm(prompt)
+        except APITimeoutError:
+            self._stats.is_timeout = True
+            logger.debug("Fallback OCR also timed out...................")
+            raise
         return json.dumps(
             [
                 {

@@ -35,7 +35,7 @@ class OcrTaskModel(BaseModel):
 
 
 class OcrTaskStats(BaseModel):
-    status: Literal["pending", "running", "failed", "finished", "fallback"]
+    status: Literal["pending", "running", "failed", "finished", "fallback", "timeout"]
     error_msg: Optional[str] = None
     attempt: int = 0
     # The execution time for the successful attempt
@@ -213,7 +213,10 @@ class OcrTask:
                     "Failed to get description of picture block(s) for "
                     f"page {self._page_index} of doc {self._task_model.original_file_uri}"
                 ) from future.exception()
-            if task.is_fallback:
+             # is_fallback only in last attempt it will be set true by_fallback_ocr 
+            if task.is_timeout:
+                self._stats.status = "timeout"
+            elif task.is_fallback:
                 self._stats.status = "fallback"
             self._stats.add_token_usage(*task.success_usage)
             picture_block["text"] = future.result().strip()
@@ -250,7 +253,8 @@ class OcrTask:
                     return result
                 except Exception as e:
                     logger.error(f"Error running OCR task: {e}", exc_info=True)
-                    self._stats.status = "failed"
+                    if self._stats.status != "timeout":
+                        self._stats.status = "failed"
                     self._stats.error_msg = str(e)
                     span.set_attribute("task_status", self._stats.status)
                     span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
@@ -331,6 +335,8 @@ class PdfOcrTask(OcrTask):
                 self._stats.status = "fallback"
             self._stats.add_token_usage(*inference_task.success_usage)
         except Exception as e:
+            if inference_task.is_timeout:
+                self._stats.status = "timeout"
             logger.error(f"Error getting OCR inference result: {e}")
             raise
 
