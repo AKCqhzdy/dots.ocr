@@ -245,12 +245,20 @@ class DotsOCRParser:
                     for future in asyncio.as_completed(tasks):
                         task_result, task = await future
                         if task_result is None:
-                            failed_tasks.append(task)
                             if task.error_msg is not None:
-                                logger.warning(
-                                    f"Error processing task {task.job_id}-{task.task_id}: "
-                                    f"{task.error_msg}"
-                                )
+                                if task._stats.status == "timeout":
+                                    logger.warning(
+                                        f"Error processing task {task.job_id}-{task.task_id}: "
+                                        f"{task.error_msg}. "
+                                        f"Notice timeout errors will not retried because it cause by ocr inference and already have retried within Inferencetask."
+                                    )
+                                    timeout_tasks.append(task)
+                                else:
+                                    logger.warning(
+                                        f"Error processing task {task.job_id}-{task.task_id}: "
+                                        f"{task.error_msg}"
+                                    )
+                                    failed_tasks.append(task)
                             continue
                         task.final_success()
                         pbar.update(1)
