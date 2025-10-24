@@ -126,3 +126,5 @@ app/input
 app/output
 
 charts/
+test/datas
+test/outputs

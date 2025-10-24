@@ -6,7 +6,7 @@ from botocore.config import Config
 # 配置
 BUCKET_NAME = "monkeyocr"
 OBJECT_KEY = "test/input/test_pdf/small.pdf"
-FILE_NAME = "test.pdf"
+FILE_NAME = "small.pdf"
 
 BUCKET_NAME_OSS = "ofnil-ml-test"
 OBJECT_KEY_OSS = "ocr/test/Guide-to-U.S.-Healthcare-System.pdf"
@@ -66,11 +66,11 @@ def upload_file(bucket_name, object_key, file_name):
 
 
 if __name__ == "__main__":
-    # download_file(BUCKET_NAME, OBJECT_KEY, FILE_NAME)
+    download_file(BUCKET_NAME, OBJECT_KEY, FILE_NAME)
     # download_file_oss(BUCKET_NAME_OSS, OBJECT_KEY_OSS, FILE_NAME_OSS)
 
-    upload_file(
-        "monkeyocr",
-        "test/input/test_pdf/output1.jpg",
-        "/dots.ocr/test/output/output1.jpg",
-    )
+    # upload_file(
+    #     "monkeyocr",
+    #     "test/input/test_pdf/output1.jpg",
+    #     "/dots.ocr/test/output/output1.jpg",
+    # )
