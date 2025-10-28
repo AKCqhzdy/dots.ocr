@@ -29,19 +29,20 @@ class PGVector:
         if not self.engine:
             self.engine = create_async_engine(
                 self.connection_string,
-                pool_size=20,  # Number of persistent connections
-                max_overflow=100,  # Additional connections beyond pool_size
-                pool_timeout=30,  # Timeout for getting connection from pool
+                pool_size=50,  # increase the number of persistent connections, improve concurrency performance
+                max_overflow=100,  # increase the number of additional connections
+                pool_timeout=30,  # reduce the connection acquisition timeout time, fast failure
                 pool_recycle=3600,  # Recycle connections every hour
                 pool_pre_ping=True,  # Verify connections before use
-                echo=False,  # Set to True for SQL logging in development
+                echo=False,  # Set to True for SQL logging in development, set to False in production
             )
-            self._semaphore = asyncio.Semaphore(20 + 100)
+            # self._semaphore = asyncio.Semaphore(50 + 100)
         return self.engine
 
     async def get_session_maker(self) -> AsyncSession:
         if not self.session_maker:
             engine = await self.ensure_engine()
+            # SQLAlchemy's async_sessionmaker has its own lock mechanism, no need for semaphore
             self.session_maker = async_sessionmaker(
                 engine,
                 class_=AsyncSession,
@@ -50,27 +51,21 @@ class PGVector:
         return self.session_maker
 
     @asynccontextmanager
-    async def managed_session(self) -> AsyncSession:
+    async def managed_session(self):
         """
-        Provides a session with concurrency control via a semaphore.
-        This is the new, recommended way to get a session.
+        Provides a session without semaphore bottleneck.
+        Let the database connection pool handle concurrency control.
         """
         session_maker = await self.get_session_maker()
-
-        logger.debug(
-            f"Waiting to acquire semaphore. Available: {self._semaphore._value}"
-        )
-        async with self._semaphore:
-            logger.debug("Semaphore acquired. Getting session from pool.")
-            async with session_maker() as session:
-                try:
-                    yield session
-                except Exception:
-                    logger.error(
-                        "Exception occurred within managed session, rollback will be triggered."
-                    )
-                    raise
-        logger.debug("Semaphore released.")
+        logger.debug("Getting session from pool (no semaphore bottleneck)")
+        async with session_maker() as session:
+            try:
+                yield session
+            except Exception:
+                logger.error(
+                    "Exception occurred within managed session, rollback will be triggered."
+                )
+                raise
 
     def get_connection_string(self):
         """PostgreSQL connection string"""
