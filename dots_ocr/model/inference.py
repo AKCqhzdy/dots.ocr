@@ -14,7 +14,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from app.utils.tracing import get_tracer, traced
-from dots_ocr.utils.image_utils import PILimage_to_base64
+from dots_ocr.utils.image_utils import PILimage_to_base64, PILimage_to_base64_async
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
 
 
@@ -106,7 +106,7 @@ class InferenceTask:
                     self._stats.attempt_num += 1
                     try:
                         logger.debug(
-                            f"Inference task {self.task_id} started (attempt {self._stats.attempt_num})"
+                            f"Inference task {self.task_id} started (attempt {self._stats.attempt_num}), address: {self.model_address}"
                         )
                         start_time = time.perf_counter()
                         result = await self._run()
@@ -155,6 +155,7 @@ class InferenceTask:
                 timeout=6000,
                 max_retries=0,
             )
+            logger.debug(f"Initialized vLLM client for model at {self.model_address}")
         if prompt is None:
             prompt = self._prompt
         messages = [
@@ -163,7 +164,7 @@ class InferenceTask:
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": PILimage_to_base64(self._image)},
+                        "image_url": {"url": await PILimage_to_base64_async(self._image)},
                     },
                     {
                         "type": "text",

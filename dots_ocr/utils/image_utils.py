@@ -8,6 +8,7 @@ from typing import Tuple
 import fitz
 import requests
 from PIL import Image
+from loguru import logger
 
 from dots_ocr.utils.consts import IMAGE_FACTOR, MAX_PIXELS, MIN_PIXELS
 from dots_ocr.utils.doc_utils import fitz_doc_to_image
@@ -66,10 +67,68 @@ def smart_resize(
 
 
 def PILimage_to_base64(image, format="PNG"):
+    import time
+    start_time = time.time()
+
+    # recording image information
+    image_size = f"{image.width}x{image.height}"
+    image_mode = image.mode
+    logger.debug(f"[IMAGE_ENCODE] Starting PILimage_to_base64 for {image_size} {image_mode} image")
+
+    # save image to memory buffer
+    save_start = time.time()
     buffered = BytesIO()
     image.save(buffered, format=format)
+    save_time = time.time() - save_start
+    logger.debug(f"[IMAGE_ENCODE] Image save took {save_time*1000:.2f}ms")
+
+    # Base64 encode
+    encode_start = time.time()
     base64_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    encode_time = time.time() - encode_start
+    logger.debug(f"[IMAGE_ENCODE] Base64 encode took {encode_time*1000:.2f}ms")
+
+    total_time = time.time() - start_time
+    logger.debug(f"[IMAGE_ENCODE] PILimage_to_base64 total time: {total_time*1000:.2f}ms for {image_size} image")
+
     return f"data:image/{format.lower()};base64,{base64_str}"
+
+
+async def PILimage_to_base64_async(image, format="PNG"):
+    """Asynchronous version of image encoding, avoid blocking the event loop"""
+    import time
+    import asyncio
+
+    start_time = time.time()
+
+    # recording image information
+    image_size = f"{image.width}x{image.height}"
+    image_mode = image.mode
+    logger.debug(f"[IMAGE_ENCODE_ASYNC] Starting PILimage_to_base64_async for {image_size} {image_mode} image")
+
+    def _encode_image():
+        # save image to memory buffer
+        save_start = time.time()
+        buffered = BytesIO()
+        image.save(buffered, format=format)
+        save_time = time.time() - save_start
+        logger.debug(f"[IMAGE_ENCODE_ASYNC] Image save took {save_time*1000:.2f}ms")
+
+        # Base64 encode
+        encode_start = time.time()
+        base64_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        encode_time = time.time() - encode_start
+        logger.debug(f"[IMAGE_ENCODE_ASYNC] Base64 encode took {encode_time*1000:.2f}ms")
+
+        return f"data:image/{format.lower()};base64,{base64_str}"
+
+    # execute image encoding in thread pool, avoid blocking the event loop
+    result = await asyncio.get_event_loop().run_in_executor(None, _encode_image)
+
+    total_time = time.time() - start_time
+    logger.debug(f"[IMAGE_ENCODE_ASYNC] PILimage_to_base64_async total time: {total_time*1000:.2f}ms for {image_size} image")
+
+    return result
 
 
 def to_rgb(pil_image: Image.Image) -> Image.Image:

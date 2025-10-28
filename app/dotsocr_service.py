@@ -47,7 +47,7 @@ configs = Configs()
 logger.info(f"Configs: {configs}")
 
 global_lock_manager = asyncio.Lock()
-pgvector_lock = asyncio.Lock()
+
 # In production, an input path corresponds to a certain output path.
 # The same input path will be mapped to different output paths only in testing codes.
 processing_input_locks = {}
@@ -148,11 +148,9 @@ async def update_pgvector(job: JobResponseModel):
         job (JobResponseModel): The job to be inserted or updated.
     """
     job.updated_at = datetime.now(UTC)
-    # TODO(tatiana): Why do we need to use a lock here? Consider measuring the performance impact.
-    async with pgvector_lock:
-        # await pg_vector_manager.ensure_table_exists()
-        record = job.get_table_record()
-        await pg_vector_manager.upsert_record(record)
+    # await pg_vector_manager.ensure_table_exists()
+    record = job.get_table_record()
+    await pg_vector_manager.upsert_record(record)
 
         # If there is a problem, it may not be reported immediately after the operation.
         # Use flush to force the operation to be committed, so that the error can be
@@ -162,10 +160,9 @@ async def update_pgvector(job: JobResponseModel):
 
 @traced(record_return=True)
 async def get_record_pgvector(job_id: str) -> OCRTable:
-    async with pgvector_lock:
-        # await pg_vector_manager.ensure_table_exists()
-        record = await pg_vector_manager.get_record_by_id(job_id)
-        return record
+    # await pg_vector_manager.ensure_table_exists()
+    record = await pg_vector_manager.get_record_by_id(job_id)
+    return record
 
 
 def sum_token_usage(
