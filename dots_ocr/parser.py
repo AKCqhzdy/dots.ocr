@@ -6,15 +6,19 @@ import fitz
 from loguru import logger
 from PIL import Image
 from tqdm.asyncio import tqdm
+from pathlib import Path
+import time
 
 from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.ocr_task import ImageOcrTask, OcrTaskModel, PdfOcrTask
 from app.utils.executor.task_executor_pool import TaskExecutorPool
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, traced
+from dots_ocr.model.layout_service import get_layout_pdf
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
 from dots_ocr.utils.doc_utils import load_images_from_pdf
 from dots_ocr.utils.page_parser import PageParser
+from dots_ocr.utils.pdf_extractor import PdfExtractor
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -80,12 +84,14 @@ class DotsOCRParser:
             job_response.task_stats.finished_task_count = 1
         return task_result, task.token_usage
 
+    # It is now deprecated
     async def _rebuild_directory(self, cells_list, images_origin):
         if self.directory_cleaner is None:
             self.directory_cleaner = DirectoryCleaner()
 
         await self.directory_cleaner.reset_header_level(cells_list, images_origin)
 
+    # It is now deprecated
     async def parse_pdf(
         self,
         input_path,
@@ -170,7 +176,7 @@ class DotsOCRParser:
             return await task.run(), task
 
     # TODO(zihao): rebuild_directory
-    async def schedule_pdf_tasks(
+    async def _schedule_pdf_tasks(
         self,
         job_response: JobResponseModel,
     ):
@@ -285,3 +291,121 @@ class DotsOCRParser:
                             "page_no": int(task.task_id)
                         }, task.status, task.token_usage
 
+    @traced()
+    async def _schedule_parse_structured_pdf(
+        self,
+        pdf_extractor: PdfExtractor,
+    ):
+        pdf_path = pdf_extractor.pdf_path
+        logger.info(f"Scheduling to parse pdf {pdf_extractor.pdf_path}")
+
+        t1 = time.perf_counter()
+        try:
+            # retry?
+            # so now face another problem, schedule at the granularity of a pdf
+            loop = asyncio.get_running_loop()
+            cells_list = await loop.run_in_executor(None, get_layout_pdf, pdf_path)
+
+        except Exception as e:
+            logger.error(f"Error in layout detection for {pdf_path}: {e}")
+            return "failed", None
+        t2 = time.perf_counter()
+        logger.info("Layout detection took {:.2f} seconds".format(t2 - t1))
+
+        async def process_single_page(cells, page_no):
+
+            origin_width, origin_height = pdf_extractor.page_size(page_no)
+            scale_width = origin_width / cells["width"]
+            scale_height = origin_height / cells["height"]
+            for info_block in cells["full_layout_info"]:
+                # resize bboxes to original size
+                info_block["bbox"] = [ info_block["bbox"][0] * scale_width,
+                                       info_block["bbox"][1] * scale_height,
+                                       info_block["bbox"][2] * scale_width,
+                                       info_block["bbox"][3] * scale_height ]
+                # use PyMuPDF extract text and use InternVL to process table/figure
+                if (
+                    info_block["category"] == "table"
+                    or info_block["category"] == "figure"
+                ):
+                    # TODO(zihao) send to internvl???
+                    pass
+                else:  # how to parse formula???
+                    info_block["text"] = pdf_extractor.extract_text(
+                        page_no, info_block["bbox"]
+                    )
+            return cells
+        
+        loop = asyncio.get_running_loop()
+        tasks = [
+            process_single_page(cells_list[page_no], page_no)
+            for page_no in range(pdf_extractor.num_pages)
+        ]
+        cells_list = await asyncio.gather(*tasks, return_exceptions=True)
+        t3 = time.perf_counter()
+        logger.info("Post processing took {:.2f} seconds".format(t3 - t2))
+        
+        return "success", cells_list
+
+    @traced()
+    async def schedule_pdf_tasks(
+        self,
+        job_response: JobResponseModel,
+        is_structured_pdf: bool = False,
+    ):
+        pdf_path = str(job_response.get_job_local_files().input_file_path)
+        pdf_extractor = PdfExtractor(pdf_path)
+        if pdf_extractor.is_structured:
+            status, cells_list = await self._schedule_parse_structured_pdf(pdf_extractor)
+            if status == "success":
+                num_pages = pdf_extractor.num_pages
+                job_response.task_stats.finished_task_count = num_pages
+                job_response.task_stats.total_task_count = num_pages
+                job_response.status = "completed"
+                for cells in cells_list:
+                    page_no = cells["page_no"]
+                    save_name_page = f"{job_response.output_file_name}_page_{page_no}"
+                    result = await self.parser.save_results(
+                        cells_with_size=cells,
+                        save_dir=job_response.get_job_local_files().output_dir_path,
+                        save_name=save_name_page,
+                        image_origin=pdf_extractor.page_to_image(page_no),
+                    )
+                
+                    # from upload_file in ocr_task
+                    page_upload_tasks = []
+                    paths_to_upload = {
+                        "md": result.get("md_content_path"),
+                        "md_nohf": result.get("md_content_nohf_path"),
+                        "json": result.get("layout_info_path"),
+                    }
+
+                    job_files = job_response.get_job_local_files()
+                    for _, local_path in paths_to_upload.items():
+                        if local_path:
+                            file_name = Path(local_path).name
+                            s3_key = f"{job_files.remote_output_file_key}/{file_name}"
+                            task = asyncio.create_task(
+                                self._storage_manager.upload_file(
+                                    job_files.remote_output_bucket,
+                                    s3_key,
+                                    local_path,
+                                    job_response.is_s3,
+                                )
+                            )
+                            page_upload_tasks.append(task)
+                    await asyncio.gather(*page_upload_tasks)
+                    paths_to_upload["page_no"] = page_no
+
+                    yield paths_to_upload, "success", {}
+                return 
+            else:
+                logger.warning(
+                    f"Structured PDF parsing failed, fallback to normal parsing for {pdf_path}"
+                )
+
+        if not is_structured_pdf or status == "failed":
+            async for task_result, task_status, token_usage in self._schedule_pdf_tasks(
+                job_response,
+            ):
+                yield task_result, task_status, token_usage
