@@ -1,7 +1,8 @@
 from loguru import logger
 from typing import Union, List, Dict, Any
 from paddleocr import LayoutDetection
-
+from transformers import LayoutLMv3ForTokenClassification
+from dots_ocr.model.layout_reader.helper import prepare_inputs, boxes2inputs, parse_logits
 
 _layout_detection_model_service = None
 
@@ -83,7 +84,7 @@ class LayoutDetectionService():
         result = self._model_service.predict(file_path, batch_size=self._batch_size, layout_nms=True)
         return self._transform_result(result)
 
-def get_model_service() -> LayoutDetectionService:
+def get_layout_detection_service() -> LayoutDetectionService:
     global _layout_detection_model_service
     if _layout_detection_model_service is None:
         logger.info("Loading layout detection model...")
@@ -91,9 +92,70 @@ def get_model_service() -> LayoutDetectionService:
     return _layout_detection_model_service
 
 def get_layout_image(image_path: Union[str, List[str]]) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
-    model_service = get_model_service()
+    model_service = get_layout_detection_service()
     return model_service._get_layout_image(image_path)
 
 def get_layout_pdf(file_path: str) -> Dict[str, Any]:
-    model_service = get_model_service()
+    model_service = get_layout_detection_service()
     return model_service._get_layout_pdf(file_path)
+
+
+
+
+
+
+_layout_reader_model_service = None
+
+class LayoutReaderService():
+    def __init__(
+        self,
+        model_name="hantian/layoutreader",
+    ):
+        self._model_name = model_name
+        self._model_service = LayoutLMv3ForTokenClassification.from_pretrained(pretrained_model_name_or_path=model_name)
+
+    def _sort_bboxes(
+        self,
+        bboxes: List[List[float]],
+        width: int,
+        height: int,
+    ):
+        """
+        Sort bounding boxes in reading order (top to bottom, left to right).
+        
+        Args:
+            bboxes: List of bounding boxes, each defined by [x1, y1, x2, y2].
+        
+        Returns:
+            List of indices representing the sorted order of the bounding boxes.
+        """
+
+        # layoutreader model need boxes normalized to [0, 1000]
+        scale_x = 1000 / width
+        scale_y = 1000 / height
+        norm_boxes = [
+            [
+                int(box[0] * scale_x),
+                int(box[1] * scale_y),
+                int(box[2] * scale_x),
+                int(box[3] * scale_y),
+            ]
+            for box in bboxes
+        ]
+
+        inputs = boxes2inputs(norm_boxes)
+        inputs = prepare_inputs(inputs, self._model_service)
+        logits = self._model_service(**inputs).logits.cpu().squeeze(0)
+        orders = parse_logits(logits, len(norm_boxes))
+        return orders
+
+def get_layout_reader_service() -> LayoutReaderService:
+    global _layout_reader_model_service
+    if _layout_reader_model_service is None:
+        logger.info("Loading layout reader model...")
+        _layout_reader_model_service = LayoutReaderService()
+    return _layout_reader_model_service
+
+def sort_bboxes(bboxes: List[List[float]], width, height) -> List[int]:
+    model_service = get_layout_reader_service()
+    return model_service._sort_bboxes(bboxes, width, height)

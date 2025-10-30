@@ -14,7 +14,7 @@ from app.utils.executor.ocr_task import ImageOcrTask, OcrTaskModel, PdfOcrTask
 from app.utils.executor.task_executor_pool import TaskExecutorPool
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, traced
-from dots_ocr.model.layout_service import get_layout_pdf
+from dots_ocr.model.layout_service import get_layout_pdf, sort_bboxes
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
 from dots_ocr.utils.doc_utils import load_images_from_pdf
 from dots_ocr.utils.page_parser import PageParser
@@ -312,38 +312,54 @@ class DotsOCRParser:
         t2 = time.perf_counter()
         logger.info("Layout detection took {:.2f} seconds".format(t2 - t1))
 
-        async def process_single_page(cells, page_no):
+        try:
+            async def process_single_page(cells, page_no):
 
-            origin_width, origin_height = pdf_extractor.page_size(page_no)
-            scale_width = origin_width / cells["width"]
-            scale_height = origin_height / cells["height"]
-            for info_block in cells["full_layout_info"]:
-                # resize bboxes to original size
-                info_block["bbox"] = [ info_block["bbox"][0] * scale_width,
-                                       info_block["bbox"][1] * scale_height,
-                                       info_block["bbox"][2] * scale_width,
-                                       info_block["bbox"][3] * scale_height ]
-                # use PyMuPDF extract text and use InternVL to process table/figure
-                if (
-                    info_block["category"] == "table"
-                    or info_block["category"] == "figure"
-                ):
-                    # TODO(zihao) send to internvl???
-                    pass
-                else:  # how to parse formula???
-                    info_block["text"] = pdf_extractor.extract_text(
-                        page_no, info_block["bbox"]
-                    )
-            return cells
-        
-        loop = asyncio.get_running_loop()
-        tasks = [
-            process_single_page(cells_list[page_no], page_no)
-            for page_no in range(pdf_extractor.num_pages)
-        ]
-        cells_list = await asyncio.gather(*tasks, return_exceptions=True)
+                origin_width, origin_height = pdf_extractor.page_size(page_no)
+                scale_width = origin_width / cells["width"]
+                scale_height = origin_height / cells["height"]
+                for info_block in cells["full_layout_info"]:
+                    # resize bboxes to original size
+                    info_block["bbox"] = [ info_block["bbox"][0] * scale_width,
+                                        info_block["bbox"][1] * scale_height,
+                                        info_block["bbox"][2] * scale_width,
+                                        info_block["bbox"][3] * scale_height ]
+                    # use PyMuPDF extract text and use InternVL to process table/figure
+                    if (
+                        info_block["category"] == "table"
+                        or info_block["category"] == "figure"
+                    ):
+                        # TODO(zihao) send to internvl???
+                        pass
+                    else:  # how to parse formula???
+                        info_block["text"] = pdf_extractor.extract_text(
+                            page_no, info_block["bbox"]
+                        )
+                return cells
+            
+            loop = asyncio.get_running_loop()
+            tasks = [
+                process_single_page(cells_list[page_no], page_no)
+                for page_no in range(pdf_extractor.num_pages)
+            ]
+            cells_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+        except Exception as e:
+            logger.error(f"Error in data extraction for {pdf_path}: {e}")
+            return "failed", None
         t3 = time.perf_counter()
-        logger.info("Post processing took {:.2f} seconds".format(t3 - t2))
+        logger.info("Data extraction took {:.2f} seconds".format(t3 - t2))
+
+        try:
+            pass
+            # sort_bboxes()
+            # order = sort_lines_by_model(fix_blocks, page_w, page_h)
+        except Exception as e:
+            logger.error(f"Error in post processing for {pdf_path}: {e}")
+            return "failed", None
+        
+        logger.info("Post processing took {:.2f} seconds".format(t4 - t3))
+        t4 = time.perf_counter()
         
         return "success", cells_list
 
@@ -358,6 +374,7 @@ class DotsOCRParser:
         if pdf_extractor.is_structured and parse_with_pipeline:
             status, cells_list = await self._schedule_parse_structured_pdf(pdf_extractor)
             if status == "success":
+                # upload and respond results. non-pipeline approach will do it in each ocr task. In this case will do together here
                 num_pages = pdf_extractor.num_pages
                 job_response.task_stats.finished_task_count = num_pages
                 job_response.task_stats.total_task_count = num_pages

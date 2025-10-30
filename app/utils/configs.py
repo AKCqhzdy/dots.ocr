@@ -68,10 +68,10 @@ class Configs(BaseSettings):
     OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: int = 10_000  # 10 seconds
 
     # Whether to delete local result files after each job is completed.
-    CLEANUP_LOCAL: bool = True
+    CLEANUP_LOCAL: bool = False
 
     #
-    PARSE_WITH_PIPELINE: bool = False
+    PARSE_WITH_PIPELINE: bool = True
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
 INPUT_DIR: Path = BASE_DIR / "input"

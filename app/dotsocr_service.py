@@ -101,6 +101,9 @@ dots_parser = DotsOCRParser(
     storage_manager=storage_manager,
 )
 
+if configs.PARSE_WITH_PIPELINE:
+    get_layout_detection_service()
+    get_layout_reader_service()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):

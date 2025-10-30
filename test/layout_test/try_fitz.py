@@ -77,7 +77,7 @@ def extract_pdf_full_info(pdf_path, img_out_dir):
 
 
 if __name__ == "__main__":
-    pdf_file = "/dots.ocr/test/datas/attn.pdf"
+    pdf_file = "/dots.ocr/app/input/monkeyocr/test/input/test_pdf/small2.pdf"
     imgs_dir = "/dots.ocr/test/outputs/pdf_extractors_outputs/output_images_fitz"
     data = extract_pdf_full_info(pdf_file, imgs_dir)
     with open(
