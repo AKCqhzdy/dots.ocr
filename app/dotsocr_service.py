@@ -375,7 +375,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 result,
                                 status,
                                 token_usage,
-                            ) in dots_parser.schedule_pdf_tasks(job_response):
+                            ) in dots_parser.schedule_pdf_tasks(job_response, configs.PARSE_WITH_PIPELINE):
                                 sum_token_usage(total_token_usage, token_usage)
                                 if status in ["fallback", "timeout", "failed"]:
                                     # TODO(tatiana): save failed/fallback task to OCRTable and

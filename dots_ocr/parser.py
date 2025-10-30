@@ -351,11 +351,11 @@ class DotsOCRParser:
     async def schedule_pdf_tasks(
         self,
         job_response: JobResponseModel,
-        is_structured_pdf: bool = False,
+        parse_with_pipeline: bool = False,
     ):
         pdf_path = str(job_response.get_job_local_files().input_file_path)
         pdf_extractor = PdfExtractor(pdf_path)
-        if pdf_extractor.is_structured:
+        if pdf_extractor.is_structured and parse_with_pipeline:
             status, cells_list = await self._schedule_parse_structured_pdf(pdf_extractor)
             if status == "success":
                 num_pages = pdf_extractor.num_pages
@@ -404,7 +404,7 @@ class DotsOCRParser:
                     f"Structured PDF parsing failed, fallback to normal parsing for {pdf_path}"
                 )
 
-        if not is_structured_pdf or status == "failed":
+        if not parse_with_pipeline or status == "failed":
             async for task_result, task_status, token_usage in self._schedule_pdf_tasks(
                 job_response,
             ):

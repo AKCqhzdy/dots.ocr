@@ -70,6 +70,9 @@ class Configs(BaseSettings):
     # Whether to delete local result files after each job is completed.
     CLEANUP_LOCAL: bool = True
 
+    #
+    PARSE_WITH_PIPELINE: bool = False
+
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
 INPUT_DIR: Path = BASE_DIR / "input"
 OUTPUT_DIR: Path = BASE_DIR / "output"
