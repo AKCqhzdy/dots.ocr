@@ -17,7 +17,7 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sys import stderr
 import shutil
@@ -645,8 +645,22 @@ async def parse_file_old(**kwargs):
         status_code=400, detail="Deprecated API, please use /parse/file instead"
     )
 
-
+_last_health_check_time: datetime | None = None
+_last_health_check_response: dict | None = None
 async def health_check():
+    global _last_health_check_time, _last_health_check_response
+    
+    now = datetime.now(UTC)
+    if (_last_health_check_time is not None
+        and _last_health_check_response is not None
+        and (now - _last_health_check_time) < timedelta(seconds=1)):
+        return Response(
+            content=_last_health_check_response["content"],
+            status_code=_last_health_check_response["status_code"],
+            headers=_last_health_check_response["headers"],
+            media_type=_last_health_check_response["media_type"],
+        )
+    
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(configs.OCR_HEALTH_CHECK_URL, timeout=5.0)
@@ -658,45 +672,43 @@ async def health_check():
             "connection",
         }
         proxied_headers = {
-            key: value
-            for key, value in response.headers.items()
-            if key.lower() not in headers_to_exclude
+            k: v for k, v in response.headers.items()
+            if k.lower() not in headers_to_exclude
         }
 
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            headers=proxied_headers,
-            media_type=response.headers.get("content-type"),
-        )
-    except httpx.ConnectError as e:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "success": False,
-                "status": 503,
-                "detail": f"Health check failed: Unable to connect to DotsOCR service. Error: {e}",
-            },
-        )
-    except httpx.TimeoutException as e:
-        return JSONResponse(
-            status_code=504,
-            content={
-                "success": False,
-                "status": 504,
-                "detail": f"Health check failed: Request to DotsOCR service timed out. Error: {e}",
-            },
-        )
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "status": 500,
-                "detail": f"An unexpected error occurred during health check. Error: {e}",
-            },
-        )
+        cached = {
+            "content": response.content,
+            "status_code": response.status_code,
+            "headers": proxied_headers,
+            "media_type": response.headers.get("content-type"),
+        }
+        
+        _last_health_check_time = now
+        _last_health_check_response = cached
 
+        return Response(
+            content=cached["content"],
+            status_code=cached["status_code"],
+            headers=cached["headers"],
+            media_type=cached["media_type"],
+        )
+        
+    except httpx.ConnectError as e:
+        result = {"detail": f"Health check failed: Unable to connect to DotsOCR service. Error: {e}"}
+    except httpx.TimeoutException as e:
+        result = {"detail": f"Health check failed: Request to DotsOCR service timed out. Error: {e}"}
+    except Exception as e:
+        result = {"detail": f"An unexpected error occurred during health check. Error: {e}"}
+    
+    json_resp = JSONResponse(status_code=503, content={"success": False, "status": 503, **result})
+    _last_health_check_time = now
+    _last_health_check_response = {
+        "content": json_resp.body,
+        "status_code": json_resp.status_code,
+        "headers": dict(json_resp.headers),
+        "media_type": json_resp.media_type,
+    }
+    return json_resp
 
 @app.get("/health")
 async def health():
