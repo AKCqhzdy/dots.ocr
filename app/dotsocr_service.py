@@ -16,11 +16,11 @@ File resources:
 import asyncio
 import json
 import os
+import shutil
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sys import stderr
-import shutil
 
 import httpx
 import uvicorn
@@ -31,6 +31,7 @@ from openai.types import CompletionUsage
 
 from app.utils.configs import INPUT_DIR, OUTPUT_DIR, Configs
 from app.utils.executor import Job, JobExecutorPool, JobResponseModel, TaskExecutorPool
+from app.utils.executor.stats import ModelIdentifier, TokenUsageItem
 from app.utils.hash import compute_md5_file, compute_md5_string
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
@@ -39,7 +40,6 @@ from dots_ocr.model.inference import InferenceTaskOptions
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
 from dots_ocr.utils.page_parser import PageParser, ParseOptions
-
 
 ######################################## Resources ########################################
 
@@ -152,10 +152,10 @@ async def update_pgvector(job: JobResponseModel):
     record = job.get_table_record()
     await pg_vector_manager.upsert_record(record)
 
-        # If there is a problem, it may not be reported immediately after the operation.
-        # Use flush to force the operation to be committed, so that the error can be
-        # reported immediately if exists.
-        # await pg_vector_manager.flush()
+    # If there is a problem, it may not be reported immediately after the operation.
+    # Use flush to force the operation to be committed, so that the error can be
+    # reported immediately if exists.
+    # await pg_vector_manager.flush()
 
 
 @traced(record_return=True)
@@ -166,15 +166,16 @@ async def get_record_pgvector(job_id: str) -> OCRTable:
 
 
 def sum_token_usage(
-    sum_usage: dict[str, CompletionUsage], update: dict[str, CompletionUsage]
-) -> dict[str, CompletionUsage]:
-    for model_name, usage in update.items():
-        if model_name not in sum_usage:
-            sum_usage[model_name] = usage
+    sum_usage: dict[ModelIdentifier, CompletionUsage],
+    update: dict[ModelIdentifier, CompletionUsage],
+) -> None:
+    for model_ident, usage in update.items():
+        if model_ident not in sum_usage:
+            sum_usage[model_ident] = usage
         else:
-            sum_usage[model_name].completion_tokens += usage.completion_tokens
-            sum_usage[model_name].prompt_tokens += usage.prompt_tokens
-            sum_usage[model_name].total_tokens += usage.total_tokens
+            sum_usage[model_ident].completion_tokens += usage.completion_tokens
+            sum_usage[model_ident].prompt_tokens += usage.prompt_tokens
+            sum_usage[model_ident].total_tokens += usage.total_tokens
 
 
 @app.post("/status")
@@ -297,19 +298,8 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                     if job_response.status != "completed":
                         job_response.status = "completed"
                         job_response.message = "Output files already exist and MD5 matches. Recover pg vector record."
-                        job_response.token_usage = {
-                            "dotsocr": {
-                                "completion_tokens": 0,
-                                "prompt_tokens": 0,
-                                "total_tokens": 0,
-                            },
-                            "InternVL3_5-2B": {
-                                "completion_tokens": 0,
-                                "prompt_tokens": 0,
-                                "total_tokens": 0,
-                            },
-                        }
-                        logger.warning(
+                        job_response.token_usage = []
+                        logging.warning(
                             f"Job {job_response.job_id} not found in pgvector but output files exist and MD5 matches."
                             "Updating to completed but token usage can't be recovered and is set to zero."
                         )
@@ -392,12 +382,16 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
 
                 # TODO(tatiana): if job is rerun (e.g., due to overwrite), we need to accumulate
                 # this measure or differentiate job runs
-                job_response.token_usage = {
-                    model_name: usage.model_dump(
-                        include={"completion_tokens", "prompt_tokens", "total_tokens"}
+                job_response.token_usage = [
+                    TokenUsageItem(
+                        model=model_ident.id,
+                        provider=model_ident.provider,
+                        prompt_tokens=usage.prompt_tokens,
+                        completion_tokens=usage.completion_tokens,
+                        total_tokens=usage.total_tokens,
                     )
-                    for model_name, usage in total_token_usage.items()
-                }
+                    for model_ident, usage in total_token_usage.items()
+                ]
 
                 if job_response.parse_type == "pdf":
                     if (
@@ -496,29 +490,32 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
     except Exception as e:
         return {"success": False, "detail": str(e)}
 
-
     finally:
         if configs.CLEANUP_LOCAL:
             input_file_path = job_files.input_file_path
             output_dir_path = job_files.output_dir_path
             if input_file_path and input_file_path.exists():
-                logger.info(f"Cleaning up local input file for job {job_response.job_id}: {input_file_path}")
+                logger.info(
+                    f"Cleaning up local input file for job {job_response.job_id}: {input_file_path}"
+                )
                 try:
                     input_file_path.unlink()
                 except Exception as e:
                     logger.error(
                         f"An error occurred during file cleanup for job {job_response.job_id}: {e}",
-                        exc_info=True
+                        exc_info=True,
                     )
 
             if output_dir_path and output_dir_path.exists():
-                logger.info(f"Cleaning up local root directory for job {job_response.job_id}: {output_dir_path}")
+                logger.info(
+                    f"Cleaning up local root directory for job {job_response.job_id}: {output_dir_path}"
+                )
                 try:
                     shutil.rmtree(output_dir_path)
                 except Exception as e:
                     logger.error(
                         f"An error occurred during directory cleanup for job {job_response.job_id}: {e}",
-                        exc_info=True
+                        exc_info=True,
                     )
 
 
@@ -610,9 +607,7 @@ async def parse_file(
         overwrite=overwrite,
     )
 
-    logger.info(
-        f"Job {ocr_job_id} created. {job_response}"
-    )
+    logger.info(f"Job {ocr_job_id} created. {job_response}")
     await update_pgvector(job_response)
     await job_executor_pool.add_job(
         Job(
@@ -645,22 +640,27 @@ async def parse_file_old(**kwargs):
         status_code=400, detail="Deprecated API, please use /parse/file instead"
     )
 
+
 _last_health_check_time: datetime | None = None
 _last_health_check_response: dict | None = None
+
+
 async def health_check():
     global _last_health_check_time, _last_health_check_response
-    
+
     now = datetime.now(UTC)
-    if (_last_health_check_time is not None
+    if (
+        _last_health_check_time is not None
         and _last_health_check_response is not None
-        and (now - _last_health_check_time) < timedelta(seconds=1)):
+        and (now - _last_health_check_time) < timedelta(seconds=1)
+    ):
         return Response(
             content=_last_health_check_response["content"],
             status_code=_last_health_check_response["status_code"],
             headers=_last_health_check_response["headers"],
             media_type=_last_health_check_response["media_type"],
         )
-    
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(configs.OCR_HEALTH_CHECK_URL, timeout=5.0)
@@ -672,7 +672,8 @@ async def health_check():
             "connection",
         }
         proxied_headers = {
-            k: v for k, v in response.headers.items()
+            k: v
+            for k, v in response.headers.items()
             if k.lower() not in headers_to_exclude
         }
 
@@ -682,7 +683,7 @@ async def health_check():
             "headers": proxied_headers,
             "media_type": response.headers.get("content-type"),
         }
-        
+
         _last_health_check_time = now
         _last_health_check_response = cached
 
@@ -692,15 +693,23 @@ async def health_check():
             headers=cached["headers"],
             media_type=cached["media_type"],
         )
-        
+
     except httpx.ConnectError as e:
-        result = {"detail": f"Health check failed: Unable to connect to DotsOCR service. Error: {e}"}
+        result = {
+            "detail": f"Health check failed: Unable to connect to DotsOCR service. Error: {e}"
+        }
     except httpx.TimeoutException as e:
-        result = {"detail": f"Health check failed: Request to DotsOCR service timed out. Error: {e}"}
+        result = {
+            "detail": f"Health check failed: Request to DotsOCR service timed out. Error: {e}"
+        }
     except Exception as e:
-        result = {"detail": f"An unexpected error occurred during health check. Error: {e}"}
-    
-    json_resp = JSONResponse(status_code=503, content={"success": False, "status": 503, **result})
+        result = {
+            "detail": f"An unexpected error occurred during health check. Error: {e}"
+        }
+
+    json_resp = JSONResponse(
+        status_code=503, content={"success": False, "status": 503, **result}
+    )
     _last_health_check_time = now
     _last_health_check_response = {
         "content": json_resp.body,
@@ -709,6 +718,7 @@ async def health_check():
         "media_type": json_resp.media_type,
     }
     return json_resp
+
 
 @app.get("/health")
 async def health():
