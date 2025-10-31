@@ -9,6 +9,7 @@ from PIL import Image
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
 from dots_ocr.utils.image_utils import smart_resize
 from dots_ocr.utils.output_cleaner import OutputCleaner
+from dots_ocr.utils.directory_entry import DirectoryStructure
 
 # Define a color map (using RGBA format)
 dict_layout_type_to_color = {
@@ -26,7 +27,6 @@ dict_layout_type_to_color = {
     "Other": (165, 42, 42, 256),  # Brown, translucent
     "Unknown": (0, 0, 0, 0),
 }
-
 
 def draw_layout_on_image(
     image,
@@ -118,7 +118,7 @@ def draw_layout_on_image(
 
     return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-
+# only prompt_grounding_ocr use pre-process & post-process to smart resize ocr area
 def pre_process_bboxes(
     origin_image,
     bboxes,
@@ -152,8 +152,7 @@ def pre_process_bboxes(
 
     return bboxes_out
 
-
-def post_process_cells(
+def post_process_bboxes(
     origin_image: Image.Image,
     cells: List[Dict],
     input_width,  # server input width, also has smart_resize in server
@@ -176,23 +175,7 @@ def post_process_cells(
         A list of post-processed cells.
     """
 
-    # check bbox
-    for cell in cells:
-        if "bbox" not in cell:
-            raise ValueError("Each cell must contain a 'bbox' key.")
-        bbox = cell["bbox"]
-        if not (isinstance(bbox, list) and len(bbox) == 4 and bbox[0] < bbox[2] and bbox[1] < bbox[3]):
-            raise ValueError(
-                "Each 'bbox' must be a list of four numbers [x0, y0, x1, y1] with x0 < x1 and y0 < y1."
-            )
-        
-        if bbox[2] > input_width:
-            logger.warning(f"bbox x1 {bbox[2]} exceeds image width {input_width}, adjusted.")
-            bbox[2] = input_width
-        if bbox[3] > input_height:
-            logger.warning(f"bbox y1 {bbox[3]} exceeds image height {input_height}, adjusted.")
-            bbox[3] = input_height
-
+    # recover the bbox to original image size
     assert isinstance(cells, list) and len(cells) > 0 and isinstance(cells[0], dict)
     min_pixels = min_pixels or MIN_PIXELS
     max_pixels = max_pixels or MAX_PIXELS
@@ -220,39 +203,12 @@ def post_process_cells(
 
     return cells_out
 
-
-def is_legal_bbox(cells):
-    for cell in cells:
-        bbox = cell["bbox"]
-        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
-            return False
-    return True
-
-
 def post_process_output(
-    response, prompt_mode, origin_image, input_image, min_pixels=None, max_pixels=None
+    response, prompt_mode, origin_image, input_image, min_pixels=None, max_pixels=None, toc=[]
 ):
-    if prompt_mode in [
-        "prompt_ocr",
-        "prompt_table_html",
-        "prompt_table_latex",
-        "prompt_formula_latex",
-    ]:
-        return response
-
-    json_load_failed = False
-    cells = response
     try:
-        cells = json.loads(cells)
-        cells = post_process_cells(
-            origin_image,
-            cells,
-            input_image.width,
-            input_image.height,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels,
-        )
-        return cells, False
+        cells = json.loads(response)
+        json_load_failed = False
     except Exception as e:
         print(f"cells post process error: {e}, when using {prompt_mode}")
         json_load_failed = True
@@ -265,3 +221,42 @@ def post_process_output(
                 [cell["text"] for cell in response_clean if "text" in cell]
             )
         return response_clean, True
+
+    # check llm bbox legality
+    for cell in cells:
+        if "bbox" not in cell:
+            raise ValueError("Each cell must contain a 'bbox' key.")
+        bbox = cell["bbox"]
+        if not (isinstance(bbox, list) and len(bbox) == 4 and bbox[0] < bbox[2] and bbox[1] < bbox[3]):
+            raise ValueError(
+                "Each 'bbox' must be a list of four numbers [x0, y0, x1, y1] with x0 < x1 and y0 < y1."
+            )
+        if bbox[2] > input_image.width:
+            logger.warning(f"bbox x1 {bbox[2]} exceeds image width {input_image.width}, adjusted.")
+            bbox[2] = input_image.width
+        if bbox[3] > input_image.height:
+            logger.warning(f"bbox y1 {bbox[3]} exceeds image height {input_image.height}, adjusted.")
+            bbox[3] = input_image.height
+
+    # post-process the bbox to original image size. 
+    # if prompt_mode is not prompt_grounding_ocr, original image is same as input image size
+    if prompt_mode in ["prompt_grounding_ocr"]:
+        cells = post_process_bboxes(
+            origin_image,
+            cells,
+            input_image.width,
+            input_image.height,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+
+    # rebuild directory structure by pdf toc
+    try:
+        if toc is not None:
+            directory_structure = DirectoryStructure()
+            directory_structure.load_from_json(cells)
+            directory_structure.rebuild_directory_by_toc(toc)
+    except Exception as e:
+        logger.error(f"Error rebuilding directory structure from TOC: {e}. But the process will continue.")
+    
+    return cells, False
