@@ -3,7 +3,6 @@ import json
 import os
 import time
 from typing import List, Optional, Union
-from loguru import logger
 
 import httpx
 from loguru import logger
@@ -13,6 +12,7 @@ from opentelemetry import trace
 from PIL import Image
 from pydantic import BaseModel
 
+from app.utils.executor.stats import ModelIdentifier
 from app.utils.tracing import get_tracer, traced
 from dots_ocr.utils.image_utils import PILimage_to_base64, PILimage_to_base64_async
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
@@ -38,7 +38,7 @@ class InferenceTaskOptions(BaseModel):
 
 
 class InferenceTaskStats(BaseModel):
-    success_usage: Optional[CompletionUsage] = None
+    success_usage: Optional[tuple[ModelIdentifier, CompletionUsage]] = None
     # at present, is_fallback only will be set to True when we use _fallback_ocr() in the last attempt.
     # is _fallback_ocr() also timeout, is_timeout will be set to True in this function.
     is_fallback: bool = False
@@ -92,8 +92,8 @@ class InferenceTask:
     # Here we do not count input tokens for failures because now the model
     # is self-hosted and do not incur actual cost.
     @property
-    def success_usage(self) -> tuple[str, Optional[CompletionUsage]]:
-        return self._options.model_name, self._stats.success_usage
+    def success_usage(self) -> Optional[tuple[ModelIdentifier, CompletionUsage]]:
+        return self._stats.success_usage
 
     # TODO(tatiana): use tenacity.retry?
     async def process(self):
@@ -164,7 +164,9 @@ class InferenceTask:
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": await PILimage_to_base64_async(self._image)},
+                        "image_url": {
+                            "url": await PILimage_to_base64_async(self._image)
+                        },
                     },
                     {
                         "type": "text",
@@ -175,7 +177,9 @@ class InferenceTask:
         ]
         try:
             start_time = time.perf_counter()
-            logger.debug(f"Sending request {self._task_id} to vLLM model{self._options.model_name}: image size: {self.size()/1024:.2f} KB. image resolution: {self._image.width}x{self._image.height}. ")
+            logger.debug(
+                f"Sending request {self._task_id} to vLLM model{self._options.model_name}: image size: {self.size()/1024:.2f} KB. image resolution: {self._image.width}x{self._image.height}. "
+            )
             response = await self._client.chat.completions.create(
                 messages=messages,
                 model=self._options.model_name,
@@ -184,13 +188,25 @@ class InferenceTask:
                 top_p=self._options.top_p,
                 timeout=self._options.get_timeout(self._stats.attempt_num),
             )
-            self._stats.success_usage = response.usage
             end_time = time.perf_counter()
-            logger.debug(f"Received response for request {self._task_id} from vLLM model{self._options.model_name} in {end_time - start_time:.2f} seconds")
+            logger.debug(
+                f"Received response for request {self._task_id} from vLLM model{self._options.model_name} in {end_time - start_time:.2f} seconds"
+            )
             logger.debug(
                 f"vLLM token usage for request {self._task_id}: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, total={response.usage.total_tokens}"
             )
-            self._stats.success_usage = response.usage
+            model_id = getattr(response, "model", None)
+            model_provider = getattr(response, "provider", "unknown")
+            if model_id and model_provider:
+                if response.usage:
+                    self._stats.success_usage = (
+                        ModelIdentifier(id=model_id, provider=model_provider),
+                        response.usage,
+                    )
+            else:
+                logger.warning(
+                    f"Missing model_id or provider in response for task {self.task_id}, model_id: {model_id}, provider: {model_provider}, usage: {response.usage}"
+                )
             response = response.choices[0].message.content
             return response
         except httpx.TimeoutException:

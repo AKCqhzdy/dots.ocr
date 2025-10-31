@@ -1,11 +1,11 @@
 import asyncio
-from loguru import logger
 import os
 import re
 from functools import partial
 
 import boto3
 from botocore.config import Config
+from loguru import logger
 
 from app.utils.tracing import trace_span_async, traced
 
@@ -49,13 +49,17 @@ class StorageManager:
                 # using asyncio to upload file, avoid blocking the event loop
                 await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self.s3_client.upload_file(Bucket=bucket, Key=key, Filename=local_path)
+                    lambda: self.s3_client.upload_file(
+                        Bucket=bucket, Key=key, Filename=local_path
+                    ),
                 )
             else:
                 # using asyncio to upload file, avoid blocking the event loop
                 await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self.s3_oss_client.upload_file(Bucket=bucket, Key=key, Filename=local_path)
+                    lambda: self.s3_oss_client.upload_file(
+                        Bucket=bucket, Key=key, Filename=local_path
+                    ),
                 )
             s3_full_path = f"{'s3' if is_s3 else 'oss'}://{bucket}/{key}"
             logger.info(f"Successfully uploaded {local_path} to {s3_full_path}")
@@ -75,20 +79,24 @@ class StorageManager:
                 # using asyncio to download file, avoid blocking the event loop
                 await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self.s3_client.download_file(Bucket=bucket, Key=key, Filename=local_path)
+                    lambda: self.s3_client.download_file(
+                        Bucket=bucket, Key=key, Filename=local_path
+                    ),
                 )
             else:
                 # using asyncio to download file, avoid blocking the event loop
                 await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self.s3_oss_client.download_file(Bucket=bucket, Key=key, Filename=local_path)
+                    lambda: self.s3_oss_client.download_file(
+                        Bucket=bucket, Key=key, Filename=local_path
+                    ),
                 )
             s3_full_path = f"{'s3' if is_s3 else 'oss'}://{bucket}/{key}"
             logger.info(f"Successfully downloaded {local_path} to {s3_full_path}")
             return s3_full_path
         except Exception as e:
             logger.error(
-                f"Failed to download s3://{bucket}/{key} to {local_path}: {e}"
+                f"Failed to download {'s3' if is_s3 else 'oss'}://{bucket}/{key} to {local_path}: {e}"
             )
             return None
 
