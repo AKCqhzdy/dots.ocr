@@ -196,7 +196,7 @@ class InferenceTask:
                 f"vLLM token usage for request {self._task_id}: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, total={response.usage.total_tokens}"
             )
             model_id = getattr(response, "model", None)
-            model_provider = getattr(response, "provider", None)
+            model_provider = getattr(response, "provider", "unknown")
             if model_id and model_provider:
                 if response.usage:
                     self._stats.success_usage = (
