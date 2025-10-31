@@ -15,6 +15,7 @@ from app.utils.tracing import get_tracer, traced
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
 from dots_ocr.utils.doc_utils import load_images_from_pdf
 from dots_ocr.utils.page_parser import PageParser
+from dots_ocr.utils.pdf_extractor import PdfExtractor
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -170,9 +171,10 @@ class DotsOCRParser:
             return await task.run(), task
 
     # TODO(zihao): rebuild_directory
-    async def schedule_pdf_tasks(
+    async def _schedule_pdf_tasks(
         self,
         job_response: JobResponseModel,
+        toc: dict,
     ):
         job_files = job_response.get_job_local_files()
         with fitz.open(str(job_files.input_file_path)) as doc:
@@ -206,6 +208,7 @@ class DotsOCRParser:
                         ocr_inference_pool=self._ocr_task_executor_pool,
                         describe_picture_pool=self._describe_picture_task_executor_pool,
                         storage_manager=self._storage_manager,
+                        toc=toc[page_index] if page_index in toc else [],
                     )
                     tasks.append(asyncio.create_task(self._concurrent_run(task)))
 
@@ -285,3 +288,15 @@ class DotsOCRParser:
                             "page_no": int(task.task_id)
                         }, task.status, task.token_usage
 
+    async def schedule_pdf_tasks(
+        self,
+        job_response: JobResponseModel,
+    ):
+        pdf_path = str(job_response.get_job_local_files().input_file_path)
+        pdf_extractor = PdfExtractor(pdf_path)
+        toc = pdf_extractor.get_clean_toc()
+        async for task_result, task_status, token_usage in self._schedule_pdf_tasks(
+            job_response,
+            toc,
+        ):
+            yield task_result, task_status, token_usage
