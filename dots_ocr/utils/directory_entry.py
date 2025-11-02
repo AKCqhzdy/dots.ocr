@@ -77,7 +77,7 @@ class SectionHeader:
                 self.category = "Section-header"
                 formatted_lines.append("**" + line + "**")
             elif self.new_level == 8:
-                self.category = "list-item"
+                self.category = "List-item"
                 formatted_lines.append(line)
             else:
                 self.category = "Section-header"
@@ -212,7 +212,7 @@ class DirectoryStructure:
                 level_set.add(header.level)
         for header in self.headers:
             if header.new_level is None:
-                if header.category == "list-item" or max_level == 0:
+                if header.category == "List-item" or max_level == 0:
                     header.new_level = 8
                 else:
                     header.new_level = min(8, max_level + sorted(level_set).index(header.level) + 1)

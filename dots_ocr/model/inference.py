@@ -108,17 +108,7 @@ class InferenceTask:
                         logger.debug(
                             f"Inference task {self.task_id} started (attempt {self._stats.attempt_num}), address: {self.model_address}"
                         )
-                        start_time = time.perf_counter()
                         result = await self._run()
-                        end_time = time.perf_counter()
-                        elapsed = end_time - start_time
-                        logger.trace(
-                            f"Inference task {self.task_id} completed in {elapsed:.4f} seconds"
-                        )
-                        # logger.debug(
-                        #     f"Inference task {self.task_id} completed in {elapsed:.4f} seconds"
-                        #     f" with result: {result}"
-                        # )
                         self._completion_future.set_result(result)
                         break
                     except APITimeoutError as e:  # retry on timeout
@@ -186,7 +176,6 @@ class InferenceTask:
             )
             self._stats.success_usage = response.usage
             end_time = time.perf_counter()
-            logger.debug(f"Received response for request {self._task_id} from vLLM model{self._options.model_name} in {end_time - start_time:.2f} seconds")
             logger.debug(
                 f"vLLM token usage for request {self._task_id}: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}, total={response.usage.total_tokens}"
             )
