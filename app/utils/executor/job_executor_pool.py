@@ -8,6 +8,7 @@ from opentelemetry import trace
 from pydantic import BaseModel
 
 from app.utils.configs import INPUT_DIR, OUTPUT_DIR
+from app.utils.executor.stats import TokenUsageItem
 from app.utils.pg_vector import JobStatusType, OCRTable, is_job_terminated
 from app.utils.storage import parse_s3_path
 
@@ -79,7 +80,7 @@ class JobResponseModel(BaseModel):
     overwrite: bool = False
 
     # model_name: usage_json from openai.types.CompletionUsage
-    token_usage: dict[str, dict[str, int]] = {}
+    token_usage: list[TokenUsageItem] = []
 
     task_stats: JobTaskStats = JobTaskStats()
 
@@ -146,7 +147,7 @@ class JobResponseModel(BaseModel):
             updatedBy=self.updated_by,
             createdAt=self.created_at.replace(tzinfo=None),
             updatedAt=self.updated_at.replace(tzinfo=None),
-            tokenUsage=self.token_usage,
+            tokenUsage=[item.model_dump() for item in self.token_usage],
         )
 
 

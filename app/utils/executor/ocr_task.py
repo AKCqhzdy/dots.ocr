@@ -1,16 +1,15 @@
 import asyncio
 import time
 from pathlib import Path
-from typing import Literal, Optional
 
 import fitz
 from loguru import logger
-from openai.types import CompletionUsage
 from opentelemetry import trace
 from PIL import Image
 from pydantic import BaseModel
 
 from app.utils.executor.job_executor_pool import JobResponseModel
+from app.utils.executor.stats import OcrTaskStats
 from app.utils.executor.task_executor_pool import TaskExecutorPool
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, start_child_span, traced
@@ -32,26 +31,6 @@ class OcrTaskModel(BaseModel):
     def local_save_dir(self):
         job_files = self.job_response.get_job_local_files()
         return str(job_files.output_dir_path)
-
-
-class OcrTaskStats(BaseModel):
-    status: Literal["pending", "running", "failed", "finished", "fallback", "timeout"]
-    error_msg: Optional[str] = None
-    attempt: int = 0
-    # The execution time for the successful attempt
-    task_execution_time: Optional[float] = None
-    token_usage: dict[str, CompletionUsage] = {}
-
-    def add_token_usage(self, model_name: str, usage: Optional[CompletionUsage]):
-        if usage is None:
-            return
-        if model_name not in self.token_usage:
-            self.token_usage[model_name] = usage
-        else:
-            total_usage = self.token_usage[model_name]
-            total_usage.completion_tokens += usage.completion_tokens
-            total_usage.prompt_tokens += usage.prompt_tokens
-            total_usage.total_tokens += usage.total_tokens
 
 
 # TODO(tatiana): Make cpu part execute in parallel?
@@ -205,12 +184,13 @@ class OcrTask:
                     "Failed to get description of picture block(s) for "
                     f"page {self._page_index} of doc {self._task_model.original_file_uri}"
                 ) from future.exception()
-             # is_fallback only in last attempt it will be set true by_fallback_ocr 
+            # is_fallback only in last attempt it will be set true by_fallback_ocr
             if task.is_timeout:
                 self._stats.status = "timeout"
             elif task.is_fallback:
                 self._stats.status = "fallback"
-            self._stats.add_token_usage(*task.success_usage)
+            if task.success_usage:
+                self._stats.add_token_usage(*task.success_usage)
             picture_block["text"] = future.result().strip()
 
     def final_success(self):
@@ -326,7 +306,8 @@ class PdfOcrTask(OcrTask):
             inference_result = await inference_future
             if inference_task.is_fallback:
                 self._stats.status = "fallback"
-            self._stats.add_token_usage(*inference_task.success_usage)
+            if inference_task.success_usage:
+                self._stats.add_token_usage(*inference_task.success_usage)
         except Exception as e:
             if inference_task.is_timeout:
                 self._stats.status = "timeout"
@@ -401,7 +382,8 @@ class ImageOcrTask(OcrTask):
             ocr_result = await ocr_future
             if ocr_task.is_fallback:
                 self._stats.status = "fallback"
-            self._stats.add_token_usage(*ocr_task.success_usage)
+            if ocr_task.success_usage:
+                self._stats.add_token_usage(*ocr_task.success_usage)
         except Exception as e:
             logger.error(f"Error getting OCR inference result: {e}")
             raise
