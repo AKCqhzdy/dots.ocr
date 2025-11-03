@@ -28,6 +28,7 @@ from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 from openai.types import CompletionUsage
+from aiorwlock import RWLock
 
 from app.utils.configs import INPUT_DIR, OUTPUT_DIR, Configs
 from app.utils.executor import Job, JobExecutorPool, JobResponseModel, TaskExecutorPool
@@ -643,82 +644,85 @@ async def parse_file_old(**kwargs):
 
 _last_health_check_time: datetime | None = None
 _last_health_check_response: dict | None = None
-
+_health_check_rwlock = RWLock()
 
 async def health_check():
     global _last_health_check_time, _last_health_check_response
-
     now = datetime.now(UTC)
-    if (
-        _last_health_check_time is not None
-        and _last_health_check_response is not None
-        and (now - _last_health_check_time) < timedelta(seconds=1)
-    ):
-        return Response(
-            content=_last_health_check_response["content"],
-            status_code=_last_health_check_response["status_code"],
-            headers=_last_health_check_response["headers"],
-            media_type=_last_health_check_response["media_type"],
-        )
+    async with _health_check_rwlock.reader_lock:
+        if (
+            _last_health_check_time is not None
+            and _last_health_check_response is not None
+            and (now - _last_health_check_time) < timedelta(seconds=1)
+        ):
+            return Response(
+                content=_last_health_check_response["content"],
+                status_code=_last_health_check_response["status_code"],
+                headers=_last_health_check_response["headers"],
+                media_type=_last_health_check_response["media_type"],
+            )
+    
+    async with _health_check_rwlock.writer_lock:
+        # Double-checked locking
+        now = datetime.now(UTC)
+        if (
+            _last_health_check_time is not None
+            and _last_health_check_response is not None
+            and (now - _last_health_check_time) < timedelta(seconds=1)
+        ):
+            cached_resp = _last_health_check_response
+            return Response(
+                content=cached_resp["content"],
+                status_code=cached_resp["status_code"],
+                headers=cached_resp["headers"],
+                media_type=cached_resp["media_type"],
+            )
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(configs.OCR_HEALTH_CHECK_URL, timeout=5.0)
 
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(configs.OCR_HEALTH_CHECK_URL, timeout=5.0)
+            headers_to_exclude = {
+                "content-encoding",
+                "content-length",
+                "transfer-encoding",
+                "connection",
+            }
+            proxied_headers = {
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() not in headers_to_exclude
+            }
 
-        headers_to_exclude = {
-            "content-encoding",
-            "content-length",
-            "transfer-encoding",
-            "connection",
+            cached = {
+                "content": response.content,
+                "status_code": response.status_code,
+                "headers": proxied_headers,
+                "media_type": response.headers.get("content-type"),
+            }
+
+            _last_health_check_time = datetime.now(UTC)
+            _last_health_check_response = cached
+
+            return Response(
+                content=cached["content"],
+                status_code=cached["status_code"],
+                headers=cached["headers"],
+                media_type=cached["media_type"],
+            )
+
+        except httpx.ConnectError as e:
+            result = {
+                "detail": f"Health check failed: Unable to connect to DotsOCR service. Error: {e}"
+            }
+        except httpx.TimeoutException as e:
+            result = {
+                "detail": f"Health check failed: Request to DotsOCR service timed out. Error: {e}"
         }
-        proxied_headers = {
-            k: v
-            for k, v in response.headers.items()
-            if k.lower() not in headers_to_exclude
-        }
-
-        cached = {
-            "content": response.content,
-            "status_code": response.status_code,
-            "headers": proxied_headers,
-            "media_type": response.headers.get("content-type"),
-        }
-
-        _last_health_check_time = now
-        _last_health_check_response = cached
-
-        return Response(
-            content=cached["content"],
-            status_code=cached["status_code"],
-            headers=cached["headers"],
-            media_type=cached["media_type"],
-        )
-
-    except httpx.ConnectError as e:
-        result = {
-            "detail": f"Health check failed: Unable to connect to DotsOCR service. Error: {e}"
-        }
-    except httpx.TimeoutException as e:
-        result = {
-            "detail": f"Health check failed: Request to DotsOCR service timed out. Error: {e}"
-        }
-    except Exception as e:
-        result = {
-            "detail": f"An unexpected error occurred during health check. Error: {e}"
-        }
-
-    json_resp = JSONResponse(
-        status_code=503, content={"success": False, "status": 503, **result}
-    )
-    _last_health_check_time = now
-    _last_health_check_response = {
-        "content": json_resp.body,
-        "status_code": json_resp.status_code,
-        "headers": dict(json_resp.headers),
-        "media_type": json_resp.media_type,
-    }
-    return json_resp
-
+        except Exception as e:
+            result = {
+                "detail": f"An unexpected error occurred during health check. Error: {e}"
+            }
+        return JSONResponse(status_code=503, content={"success": False, "status": 503, **result})
 
 @app.get("/health")
 async def health():
