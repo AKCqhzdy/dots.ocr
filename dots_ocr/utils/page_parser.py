@@ -173,11 +173,12 @@ class PageParser:
         origin_image,
         image,
         scale_factor=1.0,
+        toc=[],
     ):
         """Synchronous, CPU/IO-bound part of post-processing and saving."""
         os.makedirs(save_dir, exist_ok=True)
         result = {}
-        cells, _ = post_process_output(response, prompt_mode, origin_image, image)
+        cells, _ = post_process_output(response, prompt_mode, origin_image, image, toc)
         for cell in cells:
             cell["bbox"] = [int(float(num) / scale_factor) for num in cell["bbox"]]
         width, height = origin_image.size
@@ -187,10 +188,10 @@ class PageParser:
             "full_layout_info": cells,
         }
 
-        try:
-            draw_layout_on_image(origin_image, cells)
-        except Exception as e:
-            print(f"Error drawing layout on image: {e}")
+        # try:
+        #     draw_layout_on_image(origin_image, cells)
+        # except Exception as e:
+        #     print(f"Error drawing layout on image: {e}")
 
         json_path = os.path.join(save_dir, f"{save_name}.json")
         save_json = [cells_with_size]
@@ -216,10 +217,10 @@ class PageParser:
         return result
 
     def _process_results(
-        self, response, prompt_mode, origin_image, image, page_idx=None
+        self, response, prompt_mode, origin_image, image, page_idx=None, toc=[]
     ):
         """Synchronous, CPU/IO-bound part of post-processing and saving."""
-        cells, _ = post_process_output(response, prompt_mode, origin_image, image)
+        cells, _ = post_process_output(response, prompt_mode, origin_image, image, toc=toc)
         width, height = origin_image.size
         cells_with_size = {"width": width, "height": height, "full_layout_info": cells}
         if page_idx is not None:
@@ -339,6 +340,7 @@ class PageParser:
         image,
         page_idx,
         scale_factor,
+        toc,
     ):
         loop = asyncio.get_running_loop()
         if save_dir is None:  # do not save, just return cells for further processing
@@ -350,6 +352,7 @@ class PageParser:
                 origin_image,
                 image,
                 page_idx,
+                toc,
             )
 
         result = await loop.run_in_executor(
@@ -362,6 +365,7 @@ class PageParser:
             origin_image,
             image,
             scale_factor,
+            toc,
         )
         result["page_no"] = page_idx
         return result

@@ -15,6 +15,7 @@ from app.utils.tracing import get_tracer, traced
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
 from dots_ocr.utils.doc_utils import load_images_from_pdf
 from dots_ocr.utils.page_parser import PageParser
+from dots_ocr.utils.pdf_extractor import PdfExtractor
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -169,48 +170,85 @@ class DotsOCRParser:
         async with self.parser.semaphore:
             return await task.run(), task
 
-    # TODO(zihao): rebuild_directory
-    async def schedule_pdf_tasks(
+    async def _schedule_pdf_tasks(
         self,
         job_response: JobResponseModel,
+        pdf_extractor: PdfExtractor,
     ):
+        toc = pdf_extractor.get_clean_toc()
         job_files = job_response.get_job_local_files()
-        with fitz.open(str(job_files.input_file_path)) as doc:
-            pdf_page_num = doc.page_count
-            logger.info(
-                f"Scheduling {pdf_page_num} PDF tasks for {job_files.input_file_path}"
-            )
-            tasks = []
-            job_response.task_stats.total_task_count = pdf_page_num
+        doc = pdf_extractor.pdf_document
+        pdf_page_num = doc.page_count
+        logger.info(
+            f"Scheduling {pdf_page_num} PDF tasks for {job_files.input_file_path}"
+        )
+        tasks = []
+        job_response.task_stats.total_task_count = pdf_page_num
 
-            failed_tasks = []
-            with tqdm(
-                total=pdf_page_num, desc="Processing PDF pages (schedule)"
-            ) as pbar:
-                for page_index in range(pdf_page_num):
-                    page_file_name = (
-                        f"{job_response.output_file_name}_page_{page_index}"
-                    )
-                    task_model = OcrTaskModel(
-                        job_response=job_response,
-                        task_id=str(page_index),
-                        output_file_name=page_file_name,
-                    )
-                    task = PdfOcrTask(
-                        doc[page_index],
-                        span=get_tracer().start_span(
-                            f"PdfOcrTask {job_response.job_id}-{page_index}"
-                        ),
-                        task_model=task_model,
-                        parser=self.parser,
-                        ocr_inference_pool=self._ocr_task_executor_pool,
-                        describe_picture_pool=self._describe_picture_task_executor_pool,
-                        storage_manager=self._storage_manager,
-                    )
+        failed_tasks = []
+        with tqdm(
+            total=pdf_page_num, desc="Processing PDF pages (schedule)"
+        ) as pbar:
+            for page_index in range(pdf_page_num):
+                page_file_name = (
+                    f"{job_response.output_file_name}_page_{page_index}"
+                )
+                task_model = OcrTaskModel(
+                    job_response=job_response,
+                    task_id=str(page_index),
+                    output_file_name=page_file_name,
+                )
+                if len(toc) > 0:
+                    page_toc = toc[page_index] if page_index in toc else []
+                else:
+                    page_toc = None
+                task = PdfOcrTask(
+                    doc[page_index],
+                    span=get_tracer().start_span(
+                        f"PdfOcrTask {job_response.job_id}-{page_index}"
+                    ),
+                    task_model=task_model,
+                    parser=self.parser,
+                    ocr_inference_pool=self._ocr_task_executor_pool,
+                    describe_picture_pool=self._describe_picture_task_executor_pool,
+                    storage_manager=self._storage_manager,
+                    toc=page_toc,
+                )
+                tasks.append(asyncio.create_task(self._concurrent_run(task)))
+
+            # retry by stages instead of retrying each task asynchronously
+            timeout_tasks = []
+            for future in asyncio.as_completed(tasks):
+                task_result, task = await future
+                if task_result is None:
+                    if task.error_msg is not None:
+                        if task._stats.status == "timeout":
+                            logger.warning(
+                                f"Error processing task {task.job_id}-{task.task_id}: "
+                                f"{task.error_msg}. "
+                                f"Notice timeout errors will not retried because it cause by ocr inference and already have retried within Inferencetask."
+                            )
+                            timeout_tasks.append(task)
+                        else:
+                            logger.warning(
+                                f"Error processing task {task.job_id}-{task.task_id}: "
+                                f"{task.error_msg}"
+                            )
+                            failed_tasks.append(task)
+                    continue
+                task.final_success()
+                pbar.update(1)
+                yield task_result, task.status, task.token_usage
+
+            retry_run = self.parser.page_retry_number
+            while len(failed_tasks) > 0 and retry_run > 0:
+                task_ids = [task.task_id for task in failed_tasks]
+                logger.info(f"Retrying parsing pages {','.join(task_ids)}")
+                retry_run = retry_run - 1
+                tasks = []
+                for task in failed_tasks:
                     tasks.append(asyncio.create_task(self._concurrent_run(task)))
-
-                # retry by stages instead of retrying each task asynchronously
-                timeout_tasks = []
+                failed_tasks = []
                 for future in asyncio.as_completed(tasks):
                     task_result, task = await future
                     if task_result is None:
@@ -233,55 +271,35 @@ class DotsOCRParser:
                     pbar.update(1)
                     yield task_result, task.status, task.token_usage
 
-                retry_run = self.parser.page_retry_number
-                while len(failed_tasks) > 0 and retry_run > 0:
-                    task_ids = [task.task_id for task in failed_tasks]
-                    logger.info(f"Retrying parsing pages {','.join(task_ids)}")
-                    retry_run = retry_run - 1
-                    tasks = []
-                    for task in failed_tasks:
-                        tasks.append(asyncio.create_task(self._concurrent_run(task)))
-                    failed_tasks = []
-                    for future in asyncio.as_completed(tasks):
-                        task_result, task = await future
-                        if task_result is None:
-                            if task.error_msg is not None:
-                                if task._stats.status == "timeout":
-                                    logger.warning(
-                                        f"Error processing task {task.job_id}-{task.task_id}: "
-                                        f"{task.error_msg}. "
-                                        f"Notice timeout errors will not retried because it cause by ocr inference and already have retried within Inferencetask."
-                                    )
-                                    timeout_tasks.append(task)
-                                else:
-                                    logger.warning(
-                                        f"Error processing task {task.job_id}-{task.task_id}: "
-                                        f"{task.error_msg}"
-                                    )
-                                    failed_tasks.append(task)
-                            continue
-                        task.final_success()
-                        pbar.update(1)
-                        yield task_result, task.status, task.token_usage
+            if len(failed_tasks) > 0 or len(timeout_tasks) > 0:
+                failed_task_ids = [task.task_id for task in failed_tasks]
+                timeout_task_ids = [task.task_id for task in timeout_tasks]
+                error_msg = (
+                    f"Failed to process {len(failed_tasks) + len(timeout_tasks)} pages in "
+                    f"{job_response.input_s3_path} after {self.parser.page_retry_number}"
+                    f" retries: {failed_task_ids}. "
+                    f" inference timeout: {timeout_task_ids}"
+                )
+                logger.error(error_msg)
+                for task in failed_tasks:
+                    task.final_failure(error_msg)
+                    yield {
+                        "page_no": int(task.task_id)
+                    }, task.status, task.token_usage
+                for task in timeout_tasks:
+                    task.final_failure(error_msg)
+                    yield {
+                        "page_no": int(task.task_id)
+                    }, task.status, task.token_usage
 
-                if len(failed_tasks) > 0 or len(timeout_tasks) > 0:
-                    failed_task_ids = [task.task_id for task in failed_tasks]
-                    timeout_task_ids = [task.task_id for task in timeout_tasks]
-                    error_msg = (
-                        f"Failed to process {len(failed_tasks) + len(timeout_tasks)} pages in "
-                        f"{job_response.input_s3_path} after {self.parser.page_retry_number}"
-                        f" retries: {failed_task_ids}. "
-                        f" inference timeout: {timeout_task_ids}"
-                    )
-                    logger.error(error_msg)
-                    for task in failed_tasks:
-                        task.final_failure(error_msg)
-                        yield {
-                            "page_no": int(task.task_id)
-                        }, task.status, task.token_usage
-                    for task in timeout_tasks:
-                        task.final_failure(error_msg)
-                        yield {
-                            "page_no": int(task.task_id)
-                        }, task.status, task.token_usage
-
+    async def schedule_pdf_tasks(
+        self,
+        job_response: JobResponseModel,
+    ):
+        pdf_path = str(job_response.get_job_local_files().input_file_path)
+        pdf_extractor = PdfExtractor(pdf_path)
+        async for task_result, task_status, token_usage in self._schedule_pdf_tasks(
+            job_response,
+            pdf_extractor,
+        ):
+            yield task_result, task_status, token_usage

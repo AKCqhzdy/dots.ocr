@@ -106,7 +106,7 @@ class OcrTask:
 
     @traced()
     async def _process_ocr_results(
-        self, ocr_results, origin_image, image, scale_factor
+        self, ocr_results, origin_image, image, scale_factor, toc=[]
     ):
         self._span.add_event("start process ocr results")
         start_time = time.perf_counter()
@@ -128,20 +128,18 @@ class OcrTask:
                 image,
                 self._page_index,
                 scale_factor,
+                toc,
             )
-        except Exception as e:
-            logger.error(
-                f"Error processing results for page {self._page_index}"
-                f" of {self._task_model.original_file_uri}: {e}"
+        except Exception:
+            logger.exception(
+                f"Error processing results for page {self._page_index} "
+                f"of {self._task_model.original_file_uri}"
             )
             raise
 
+
         end_time = time.perf_counter()
         elapsed = end_time - start_time
-        logger.debug(
-            f"Page {self._page_index} of doc {self._task_model.original_file_uri} "
-            f"post-processed in {elapsed:.4f} seconds: {cells}"
-        )
         self._span.add_event("end process ocr results")
         self._span.set_attribute("post_process_ocr_results_wall_time_s", elapsed)
 
@@ -153,7 +151,6 @@ class OcrTask:
         futures: list[asyncio.Future] = []
         picture_blocks: list[dict] = []
         try:
-            start_time = time.perf_counter()
             idx = 0
             tasks: list[InferenceTask] = []
             for picture_block, cropped_img in self._parser.iter_picture_blocks(
@@ -170,12 +167,7 @@ class OcrTask:
                 picture_blocks.append(picture_block)
 
             await asyncio.gather(*futures)
-            end_time = time.perf_counter()
-            elapsed = end_time - start_time
-            logger.trace(
-                f"Time waiting for page {self._page_index} description "
-                f"inference is {elapsed:.4f} seconds"
-            )
+
         except Exception as e:
             logger.error(f"Error submitting picture description inference task: {e}")
             raise
@@ -247,11 +239,12 @@ class OcrTask:
 class PdfOcrTask(OcrTask):
     """A CPU-bound task."""
 
-    def __init__(self, page: fitz.Page, storage_manager: StorageManager, **kwargs):
+    def __init__(self, page: fitz.Page, storage_manager: StorageManager, toc: dict, **kwargs):
         super().__init__(**kwargs)
         self._page_index = int(self._task_model.task_id)
         self._page = page
         self._storage_manager = storage_manager
+        self._toc = toc
 
     @traced()
     async def _upload_results(self, result: dict):
@@ -287,15 +280,15 @@ class PdfOcrTask(OcrTask):
             dict: keys are "md", "md_nohf", "json", "page_no"
         """
         try:
-            start_time = time.perf_counter()
             origin_image, image, prompt, scale_factor = self._parser.prepare_pdf_page(
                 self._page, self.prompt_mode, bbox=None
             )
-            end_time = time.perf_counter()
-            logger.trace(
-                f"Page {self._page_index} of doc {self._task_model.original_file_uri}"
-                f" prepared in {end_time - start_time:.4f} seconds"
-            )
+            # transform toc coordinates from pdf space to image space
+            logger.debug(f"Page index: {self._page_index}, TOC: {self._toc}")
+            if self._toc is not None:
+                for entry in self._toc:
+                    entry["to"][0] = entry["to"][0] * scale_factor
+                    entry["to"][1] = entry["to"][1] * scale_factor
         except Exception as e:
             logger.error(f"Error preparing image and prompt: {e}")
             raise
@@ -322,12 +315,8 @@ class PdfOcrTask(OcrTask):
             raise
 
         try:
-            logger.trace(
-                f"Post-processing page {self._page_index} "
-                f"of doc {self._task_model.original_file_uri}"
-            )
             cells = await self._process_ocr_results(
-                inference_result, origin_image, image, scale_factor
+                inference_result, origin_image, image, scale_factor, self._toc
             )
         except Exception as e:
             logger.error(f"Error post-processing ocr results: {e}")

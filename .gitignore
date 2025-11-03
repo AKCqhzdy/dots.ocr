@@ -119,10 +119,11 @@ dmypy.json
 #*.png
 #*.pdf
 temp/
-output/ 
+outputs/ 
 # playground/
 
 app/input
 app/output
 
 charts/
+logs/
