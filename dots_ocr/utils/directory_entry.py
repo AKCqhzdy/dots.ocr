@@ -207,6 +207,7 @@ class DirectoryStructure:
         # 2. for those entries that are not matched, theirs new_level exceeds the max_level of any matched headers
         max_level = max(5, max_level)
         level_set = set()
+        toc_result = []
         for header in self.headers:
             if header.new_level is None:
                 level_set.add(header.level)
@@ -217,4 +218,12 @@ class DirectoryStructure:
                 else:
                     header.new_level = min(8, max_level + sorted(level_set).index(header.level) + 1)
             header.reset_text_and_update()
+
+            entry = {
+                "level": header.new_level,
+                "text": header.clean_text,
+                "bbox": [i for i in header.bbox],
+            }
+            toc_result.append(entry)
+        return toc_result
             

@@ -220,7 +220,7 @@ def post_process_output(
             response_clean = "\n\n".join(
                 [cell["text"] for cell in response_clean if "text" in cell]
             )
-        return response_clean, True
+        return response_clean, None, True
 
     # check llm bbox legality
     for cell in cells:
@@ -251,12 +251,14 @@ def post_process_output(
         )
 
     # rebuild directory structure by pdf toc
+    toc_result = None
     try:
         if toc is not None:
             directory_structure = DirectoryStructure()
             directory_structure.load_from_json(cells)
-            directory_structure.rebuild_directory_by_toc(toc)
+            toc_result = directory_structure.rebuild_directory_by_toc(toc)
+
     except Exception as e:
         logger.error(f"Error rebuilding directory structure from TOC: {e}. But the process will continue.")
     
-    return cells, False
+    return cells, toc_result, False

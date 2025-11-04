@@ -410,6 +410,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                         return final_response
                     # combine all page to upload
                     all_paths_to_upload.sort(key=lambda item: item["page_no"])
+                    full_toc = []
                     output_files = {}
                     try:
                         output_files["md"] = open(
@@ -428,7 +429,13 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                             local_path, "r", encoding="utf-8"
                                         ) as input_file:
                                             data = json.load(input_file)[0]
+
                                         data = {"page_no": page_no, **data}
+                                        page_toc = data.get("toc", [])
+                                        for item in page_toc:
+                                            item["page_no"] = page_no
+                                        full_toc.extend(page_toc)
+                                        data.pop("toc", None)
                                         all_json_data.append(data)
                                     except Exception as e:
                                         logger.warning(
@@ -447,6 +454,8 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                         logger.warning(
                                             f"Failed to read {file_type} file {local_path}: {str(e)}"
                                         )
+                        
+                        all_json_data.insert(0, {"toc": full_toc})
                         with open(
                             job_files.output_json_path, "w", encoding="utf-8"
                         ) as json_output:

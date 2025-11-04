@@ -178,13 +178,14 @@ class PageParser:
         """Synchronous, CPU/IO-bound part of post-processing and saving."""
         os.makedirs(save_dir, exist_ok=True)
         result = {}
-        cells, _ = post_process_output(response, prompt_mode, origin_image, image, toc)
+        cells, toc_result, _ = post_process_output(response, prompt_mode, origin_image, image, toc=toc)
         for cell in cells:
             cell["bbox"] = [int(float(num) / scale_factor) for num in cell["bbox"]]
         width, height = origin_image.size
         cells_with_size = {
             "width": int(float(width) / scale_factor),
             "height": int(float(height) / scale_factor),
+            "toc": toc_result,
             "full_layout_info": cells,
         }
 
@@ -220,9 +221,9 @@ class PageParser:
         self, response, prompt_mode, origin_image, image, page_idx=None, toc=[]
     ):
         """Synchronous, CPU/IO-bound part of post-processing and saving."""
-        cells, _ = post_process_output(response, prompt_mode, origin_image, image, toc=toc)
+        cells, toc_result, _ = post_process_output(response, prompt_mode, origin_image, image, page_idx, toc=toc)
         width, height = origin_image.size
-        cells_with_size = {"width": width, "height": height, "full_layout_info": cells}
+        cells_with_size = {"width": width, "height": height, "toc": toc_result, "full_layout_info": cells}
         if page_idx is not None:
             cells_with_size["page_no"] = page_idx
         return cells_with_size
