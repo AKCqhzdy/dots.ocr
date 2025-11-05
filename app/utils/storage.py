@@ -67,13 +67,13 @@ class StorageManager:
             return s3_full_path
         except Exception as e:
             logger.error(f"Failed to upload {local_path} to s3://{bucket}/{key}: {e}")
-            return None
+            raise
 
     @traced(record_return=True)
     async def download_file(self, bucket, key, local_path, is_s3):
         if not bucket or not key or not local_path:
             logger.warning("Bucket, key, and local_path must be specified.")
-            return None
+            raise ValueError("Bucket, key, and local_path must be specified.")
         try:
             if is_s3:
                 # using asyncio to download file, avoid blocking the event loop
@@ -98,7 +98,7 @@ class StorageManager:
             logger.error(
                 f"Failed to download {'s3' if is_s3 else 'oss'}://{bucket}/{key} to {local_path}: {e}"
             )
-            return None
+            raise
 
     @traced()
     async def delete_file(self, bucket, key, is_s3):
