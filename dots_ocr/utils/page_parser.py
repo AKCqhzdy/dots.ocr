@@ -82,8 +82,7 @@ class PageParser:
 
         self.concurrency_limit = concurrency_limit
         self.semaphore = asyncio.Semaphore(self.concurrency_limit)
-        # TODO(zihao) PP-layout-detection isn't async safe, need to add a pool and send requests in batch
-        self.semaphore_pipe = asyncio.Semaphore(1)
+        self.semaphore_reader = asyncio.Semaphore(self.concurrency_limit)  # TODO(zihao) can larger. need meansure later
         self.cpu_executor = ThreadPoolExecutor(max_workers=os.cpu_count())
 
     @property
@@ -272,6 +271,7 @@ class PageParser:
 
         return result
 
+    # It is now deprecated
     async def _inference_with_vllm(self, image, prompt):
         task = OcrInferenceTask(
             start_child_span("OcrInferenceTask", None),
@@ -292,20 +292,7 @@ class PageParser:
         )
         return await task.inference_with_vllm()
 
-    
-    # TODO(zihao) temparary use same semaphore with non-pipe
-    async def _layout_detection(self, image):
-        async with self.semaphore_pipe:
-            cells_l = await get_layout_image(image)
-            return cells_l[0]
-
-    async def _layout_reader(self, blocks, width, height):
-        # async with self.semaphore_pipe:
-        bboxes = [info_block["bbox"] for info_block in blocks]
-        order = await sort_bboxes(bboxes, width, height)
-        sorted_blocks = [blocks[i] for i in order]
-        blocks[:] = sorted_blocks
-
+    # It is now deprecated
     async def _parse_single_image(
         self,
         origin_image,

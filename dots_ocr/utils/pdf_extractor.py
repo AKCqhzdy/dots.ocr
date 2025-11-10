@@ -45,7 +45,7 @@ class PdfExtractor:
     @staticmethod
     def extract_text(
         page: fitz.Page,
-        bbox : tuple = None
+        bbox : list = None
     ) -> str:
         if bbox:
             rect = fitz.Rect(bbox)
@@ -55,7 +55,7 @@ class PdfExtractor:
         text = re.sub(r"(?<!\n)\n(?!\n)", " ", text) 
         return text.strip()
     
-    def extract_text_from_page(self, page_no: int, bbox: tuple = None) -> str:
+    def extract_text_from_page(self, page_no: int, bbox: list = None) -> str:
         if page_no < 0 or page_no >= self.num_pages:
             raise ValueError(f"Page number {page_no} out of range [0, {self.num_pages-1}]")
         page = self.pdf_document[page_no]
@@ -74,7 +74,7 @@ class PdfExtractor:
 
         Args:
             page_no (int): The page number to crop from (0-indexed).
-            bbox (tuple): The bounding box in PDF coordinates (x0, y0, x1, y1).
+            bbox (list): The bounding box in PDF coordinates (x0, y0, x1, y1).
             output_path (str): The full path to save the cropped image (e.g., "test/outputs/crop/my_crop.png").
             dpi (int, optional): The resolution for the output image. Defaults to 200 for better quality.
         """

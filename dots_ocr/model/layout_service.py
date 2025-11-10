@@ -53,7 +53,7 @@ class LayoutDetectionService():
     async def _get_layout_image(
         self,
         image_input: Union[str, List[str], Image.Image, List[Image.Image], np.ndarray, List[np.ndarray]]
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    ) -> List[Dict[str, Any]]:
         """
         Get layout detection results.
         
@@ -61,7 +61,7 @@ class LayoutDetectionService():
             image_path: str or list of str - single image path or list of image paths
         
         Returns:
-            Dict or List[Dict]: Layout detection result(s).
+            List[Dict]: Layout detection result(s).
 
             - Single image: {'input_path': str, 'page_index': None, 'boxes': List[Dict]}
             Each box in 'boxes' contains:
@@ -114,7 +114,7 @@ async def get_layout_detection_service() -> LayoutDetectionService:
         _layout_detection_model_service = await asyncio.to_thread(LayoutDetectionService)
     return _layout_detection_model_service
 
-async def get_layout_image(image_input) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+async def get_layout_image(image_input) -> List[Dict[str, Any]]:
     model_service = await get_layout_detection_service()
     return await model_service._get_layout_image(image_input)
 

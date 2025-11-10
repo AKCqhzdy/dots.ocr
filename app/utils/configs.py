@@ -17,6 +17,16 @@ class Configs(BaseSettings):
     # model. Increasing this may improve GPU utilization to some extent but at the cost of the
     # model server memory usage.
     CONCURRENT_DESCRIBE_PICTURE_TASK_LIMIT: int = 16
+    
+    # The max number of concurrent picture description requests that can be sent to the layout 
+    # detection model (PP-DocLayout_plus-L). Increasing this may improve CPU utilization and
+    # increase the speed to some extent but at the cost of the model server memory usage.
+    CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT: int = 2
+
+    # The max number of concurrent picture description requests that can be sent to the layout 
+    # reader model. Increasing this may improve CPU utilization and increase the speed to some
+    # extent but at the cost of the model server memory usage.
+    CONCURRENT_LAYOUT_READER_TASK_LIMIT: int = 2
 
     # The max number of concurrent OCR tasks that can be run. Increasing this may improve overall
     # resource overlapping, but at the cost of memory for buffering the extracted images from docs,
@@ -37,6 +47,16 @@ class Configs(BaseSettings):
     # overlapping, but at the cost of memory for buffering the picture blocks identified from
     # the documents.
     DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE: int = 24
+
+    # The number of layout detection tasks that can be queued. Increase this may improve resource
+    # overlapping, but at the cost of memory for buffering the extracted images from docs,
+    LAYOUT_DETECTION_TASK_QUEUE_MAX_SIZE: int = 2 * CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT
+
+    # The number of layout reader tasks that can be queued. Increase this may improve resource
+    # overlapping, but at the cost of memory for buffering all blocks identified from the documents.
+    LAYOUT_READER_TASK_QUEUE_MAX_SIZE: int = 4
+
+    LAYOUT_DETECTION_BATCH_COLLECT_WINDOW: float = 0.2 # seconds
 
     OCR_INFERENCE_HOST: str = "localhost"
     OCR_INFERENCE_PORT: int = 8000

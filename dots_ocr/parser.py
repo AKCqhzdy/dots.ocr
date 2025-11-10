@@ -11,7 +11,7 @@ import time
 
 from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.ocr_task import OcrTaskModel, ImageOcrTask, PdfOcrTask, PipeOcrTask
-from app.utils.executor.task_executor_pool import TaskExecutorPool
+from app.utils.executor.task_executor_pool import TaskExecutorPool, BatchTaskExecutorPool
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, traced
 from dots_ocr.utils.directory_cleaner import DirectoryCleaner
@@ -32,6 +32,8 @@ class DotsOCRParser:
         self,
         ocr_task_executor_pool: TaskExecutorPool,
         describe_picture_task_executor_pool: TaskExecutorPool,
+        layout_detection_task_executor_pool: BatchTaskExecutorPool | None,
+        layout_reader_task_executor_pool: TaskExecutorPool | None,
         page_parser: PageParser,
         storage_manager: StorageManager,
     ):
@@ -39,6 +41,8 @@ class DotsOCRParser:
         self.directory_cleaner = None
         self._ocr_task_executor_pool = ocr_task_executor_pool
         self._describe_picture_task_executor_pool = describe_picture_task_executor_pool
+        self._layout_detection_task_executor_pool = layout_detection_task_executor_pool
+        self._layout_reader_task_executor_pool = layout_reader_task_executor_pool
         self._storage_manager = storage_manager
 
     @traced(record_return=True)
@@ -210,7 +214,7 @@ class DotsOCRParser:
                 
                 if parse_with_pipeline:
                     task = PipeOcrTask(
-                        doc[page_index],
+                        page=doc[page_index],
                         span=get_tracer().start_span(
                             f"PipeOcrTask {job_response.job_id}-{page_index}"
                         ),
@@ -218,12 +222,14 @@ class DotsOCRParser:
                         parser=self.parser,
                         ocr_inference_pool=self._ocr_task_executor_pool,
                         describe_picture_pool=self._describe_picture_task_executor_pool,
+                        layout_detection_pool=self._layout_detection_task_executor_pool,
+                        layout_reader_pool=self._layout_reader_task_executor_pool,
                         storage_manager=self._storage_manager,
                         pdf_extractor=pdf_extractor,
                     )
                 else:
                     task = PdfOcrTask(
-                        doc[page_index],
+                        page=doc[page_index],
                         span=get_tracer().start_span(
                             f"PdfOcrTask {job_response.job_id}-{page_index}"
                         ),
@@ -261,6 +267,7 @@ class DotsOCRParser:
                 yield task_result, task.status, task.token_usage
 
             retry_run = self.parser.page_retry_number
+            retry_run = 0
             while len(failed_tasks) > 0 and retry_run > 0:
                 task_ids = [task.task_id for task in failed_tasks]
                 logger.info(f"Retrying parsing pages {','.join(task_ids)}")
