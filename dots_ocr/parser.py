@@ -6,9 +6,11 @@ import fitz
 from loguru import logger
 from PIL import Image
 from tqdm.asyncio import tqdm
+from pathlib import Path
+import time
 
 from app.utils.executor.job_executor_pool import JobResponseModel
-from app.utils.executor.ocr_task import ImageOcrTask, OcrTaskModel, PdfOcrTask
+from app.utils.executor.ocr_task import OcrTaskModel, ImageOcrTask, PdfOcrTask, PipeOcrTask
 from app.utils.executor.task_executor_pool import TaskExecutorPool
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, traced
@@ -81,12 +83,14 @@ class DotsOCRParser:
             job_response.task_stats.finished_task_count = 1
         return task_result, task.token_usage
 
+    # It is now deprecated
     async def _rebuild_directory(self, cells_list, images_origin):
         if self.directory_cleaner is None:
             self.directory_cleaner = DirectoryCleaner()
 
         await self.directory_cleaner.reset_header_level(cells_list, images_origin)
 
+    # It is now deprecated
     async def parse_pdf(
         self,
         input_path,
@@ -174,6 +178,7 @@ class DotsOCRParser:
         self,
         job_response: JobResponseModel,
         pdf_extractor: PdfExtractor,
+        parse_with_pipeline: bool = False,
     ):
         toc = pdf_extractor.get_clean_toc()
         job_files = job_response.get_job_local_files()
@@ -202,18 +207,33 @@ class DotsOCRParser:
                     page_toc = toc[page_index] if page_index in toc else []
                 else:
                     page_toc = None
-                task = PdfOcrTask(
-                    doc[page_index],
-                    span=get_tracer().start_span(
-                        f"PdfOcrTask {job_response.job_id}-{page_index}"
-                    ),
-                    task_model=task_model,
-                    parser=self.parser,
-                    ocr_inference_pool=self._ocr_task_executor_pool,
-                    describe_picture_pool=self._describe_picture_task_executor_pool,
-                    storage_manager=self._storage_manager,
-                    toc=page_toc,
-                )
+                
+                if parse_with_pipeline:
+                    task = PipeOcrTask(
+                        doc[page_index],
+                        span=get_tracer().start_span(
+                            f"PipeOcrTask {job_response.job_id}-{page_index}"
+                        ),
+                        task_model=task_model,
+                        parser=self.parser,
+                        ocr_inference_pool=self._ocr_task_executor_pool,
+                        describe_picture_pool=self._describe_picture_task_executor_pool,
+                        storage_manager=self._storage_manager,
+                        pdf_extractor=pdf_extractor,
+                    )
+                else:
+                    task = PdfOcrTask(
+                        doc[page_index],
+                        span=get_tracer().start_span(
+                            f"PdfOcrTask {job_response.job_id}-{page_index}"
+                        ),
+                        task_model=task_model,
+                        parser=self.parser,
+                        ocr_inference_pool=self._ocr_task_executor_pool,
+                        describe_picture_pool=self._describe_picture_task_executor_pool,
+                        storage_manager=self._storage_manager,
+                        toc=page_toc,
+                    )
                 tasks.append(asyncio.create_task(self._concurrent_run(task)))
 
             # retry by stages instead of retrying each task asynchronously
@@ -292,14 +312,17 @@ class DotsOCRParser:
                         "page_no": int(task.task_id)
                     }, task.status, task.token_usage
 
+    @traced()
     async def schedule_pdf_tasks(
         self,
         job_response: JobResponseModel,
+        parse_with_pipeline: bool = False,
     ):
         pdf_path = str(job_response.get_job_local_files().input_file_path)
         pdf_extractor = PdfExtractor(pdf_path)
         async for task_result, task_status, token_usage in self._schedule_pdf_tasks(
             job_response,
             pdf_extractor,
+            parse_with_pipeline = parse_with_pipeline if pdf_extractor.is_structured else False,
         ):
             yield task_result, task_status, token_usage

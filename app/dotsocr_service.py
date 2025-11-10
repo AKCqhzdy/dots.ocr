@@ -38,6 +38,7 @@ from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, setup_tracing, trace_span_async, traced
 from dots_ocr.model.inference import InferenceTaskOptions
+from dots_ocr.model.layout_service import get_layout_detection_service, get_layout_reader_service
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
 from dots_ocr.utils.page_parser import PageParser, ParseOptions
@@ -110,6 +111,10 @@ async def lifespan(_: FastAPI):
 
     logger.remove(0)
     logger.add(stderr, level=configs.LOG_LEVEL)
+    
+    if configs.PARSE_WITH_PIPELINE:
+        await get_layout_detection_service()
+        await get_layout_reader_service()
 
     await pg_vector_manager.ensure_table_exists()
 
@@ -366,7 +371,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 result,
                                 status,
                                 token_usage,
-                            ) in dots_parser.schedule_pdf_tasks(job_response):
+                            ) in dots_parser.schedule_pdf_tasks(job_response, configs.PARSE_WITH_PIPELINE):
                                 sum_token_usage(total_token_usage, token_usage)
                                 if status in ["fallback", "timeout", "failed"]:
                                     # TODO(tatiana): save failed/fallback task to OCRTable and

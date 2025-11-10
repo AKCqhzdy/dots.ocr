@@ -15,7 +15,7 @@ from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, start_child_span, traced
 from dots_ocr.model.inference import InferenceTask, OcrInferenceTask
 from dots_ocr.utils.page_parser import PageParser
-
+from dots_ocr.utils.pdf_extractor import PdfExtractor
 
 class OcrTaskModel(BaseModel):
     job_response: JobResponseModel
@@ -145,6 +145,12 @@ class OcrTask:
 
         return cells
 
+    def iter_picture_blocks(self, cells: dict, origin_image: Image.Image):
+        for info_block in cells["full_layout_info"]:
+            if info_block["category"] == "Picture":
+                x0, y0, x1, y1 = info_block["bbox"]
+                cropped_img = origin_image.crop((x0, y0, x1, y1))
+                yield info_block, cropped_img
     @traced()
     async def _describe_pictures_in_page(self, cells: dict, origin_image: Image.Image):
         prompt = self._parser.picture_description_prompt
@@ -153,7 +159,7 @@ class OcrTask:
         try:
             idx = 0
             tasks: list[InferenceTask] = []
-            for picture_block, cropped_img in self._parser.iter_picture_blocks(
+            for picture_block, cropped_img in self.iter_picture_blocks(
                 cells, origin_image
             ):
                 future, task = await self._submit_describe_picture_task(
@@ -423,3 +429,123 @@ class ImageOcrTask(OcrTask):
                 raise
 
         return cells
+
+
+
+
+class PipeOcrTask(OcrTask):
+    """A CPU-bound task."""
+
+    def __init__(
+        self,
+        page: fitz.Page,
+        storage_manager: StorageManager, 
+        pdf_extractor: PdfExtractor,
+        **kwargs):
+        super().__init__(**kwargs)
+        self._page_index = int(self._task_model.task_id)
+        self._page = page
+        self._storage_manager = storage_manager
+        self._pdf_extractor = pdf_extractor
+        
+    @traced()
+    async def _upload_results(self, result: dict):
+        page_upload_tasks = []
+        paths_to_upload = {
+            "md": result.get("md_content_path"),
+            "md_nohf": result.get("md_content_nohf_path"),
+            "json": result.get("layout_info_path"),
+        }
+
+        job_files = self._task_model.job_response.get_job_local_files()
+        for _, local_path in paths_to_upload.items():
+            if local_path:
+                file_name = Path(local_path).name
+                s3_key = f"{job_files.remote_output_file_key}/{file_name}"
+                task = asyncio.create_task(
+                    self._storage_manager.upload_file(
+                        job_files.remote_output_bucket,
+                        s3_key,
+                        local_path,
+                        self._task_model.job_response.is_s3,
+                    )
+                )
+                page_upload_tasks.append(task)
+        await asyncio.gather(*page_upload_tasks)
+        paths_to_upload["page_no"] = self._page_index
+        return paths_to_upload
+
+    @traced()
+    async def _run(self):
+        """
+        Returns:
+            dict: keys are "md", "md_nohf", "json", "page_no"
+        """
+        origin_image, scale_factor = self._pdf_extractor.page_to_image(self._page_index, self._parser.dpi)
+        try:
+            cells = await self._parser._layout_detection(origin_image)
+            cells['page_no'] = self._page_index
+            if logger._core.min_level <= logger.level("DEBUG").no:
+                i=0
+                for info_block in cells["full_layout_info"]:
+                    i+=1
+                    self._pdf_extractor.crop_bbox(self._page_index, info_block['bbox'], f"/dots.ocr/test/outputs/crop/{self._page_index}/crop_{i}.png" ,self._parser.dpi)
+                logger.debug(f"Layout detection results: {cells}")
+        except Exception as e:
+            logger.error(f"Error while detecting layout: {e}")
+            raise
+        
+        try:
+            # TODO(zihao): need align category between layout detection model and dots
+            for info_block in cells["full_layout_info"]:
+                if (
+                    info_block["category"] == "table"
+                    or info_block["category"] == "figure"
+                ):
+                    pass
+                else:
+                    block_in_pdf_size = [ i / scale_factor for i in info_block["bbox"] ]
+                    info_block["text"] = self._pdf_extractor.extract_text_from_page(
+                        self._page_index, block_in_pdf_size
+                    )
+            logger.debug(f"Extracted text results: {cells}")
+        except Exception as e:
+            logger.error(f"Error while extracting: {e}")
+            raise
+
+        try:
+            await self._parser._layout_reader(cells["full_layout_info"], cells['width'], cells['height'])
+        except Exception as e:
+            logger.error(f"Error while sorting blocks: {e}")
+            raise
+        
+        
+        if self.describe_picture:
+            try:
+                await self._describe_pictures_in_page(cells, origin_image=origin_image)
+            except Exception as e:
+                logger.error(
+                    f"Error describing pictures in page {self._page_index}: {e}"
+                )
+                raise
+
+        try:
+            cells = await self._parser.save_results(
+                cells,
+                self._task_model.local_save_dir,
+                self._task_model.output_file_name,
+                origin_image,
+                scale_factor,
+            )
+            logger.debug(
+                f"Saved results for page {self._page_index} "
+                f"of doc {self._task_model.original_file_uri}: {cells}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error saving results for page {self._page_index} "
+                f"of doc {self._task_model.original_file_uri}: {e}"
+            )
+            raise
+
+        return await self._upload_results(cells)

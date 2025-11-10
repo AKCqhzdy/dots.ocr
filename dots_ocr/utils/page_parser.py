@@ -24,6 +24,8 @@ from dots_ocr.utils.layout_utils import (
     pre_process_bboxes,
 )
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
+from dots_ocr.model.layout_service import get_layout_image, sort_bboxes
+
 
 
 class ParseOptions(BaseModel):
@@ -80,6 +82,8 @@ class PageParser:
 
         self.concurrency_limit = concurrency_limit
         self.semaphore = asyncio.Semaphore(self.concurrency_limit)
+        # TODO(zihao) PP-layout-detection isn't async safe, need to add a pool and send requests in batch
+        self.semaphore_pipe = asyncio.Semaphore(1)
         self.cpu_executor = ThreadPoolExecutor(max_workers=os.cpu_count())
 
     @property
@@ -288,6 +292,20 @@ class PageParser:
         )
         return await task.inference_with_vllm()
 
+    
+    # TODO(zihao) temparary use same semaphore with non-pipe
+    async def _layout_detection(self, image):
+        async with self.semaphore_pipe:
+            cells_l = await get_layout_image(image)
+            return cells_l[0]
+
+    async def _layout_reader(self, blocks, width, height):
+        # async with self.semaphore_pipe:
+        bboxes = [info_block["bbox"] for info_block in blocks]
+        order = await sort_bboxes(bboxes, width, height)
+        sorted_blocks = [blocks[i] for i in order]
+        blocks[:] = sorted_blocks
+
     async def _parse_single_image(
         self,
         origin_image,
@@ -436,9 +454,3 @@ class PageParser:
 
         return origin_image, image, prompt, scale_factor
 
-    def iter_picture_blocks(self, cells: dict, origin_image: Image.Image):
-        for info_block in cells["full_layout_info"]:
-            if info_block["category"] == "Picture":
-                x0, y0, x1, y1 = info_block["bbox"]
-                cropped_img = origin_image.crop((x0, y0, x1, y1))
-                yield info_block, cropped_img
