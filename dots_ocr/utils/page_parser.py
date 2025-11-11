@@ -24,6 +24,8 @@ from dots_ocr.utils.layout_utils import (
     pre_process_bboxes,
 )
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
+from dots_ocr.model.layout_service import get_layout_image, sort_bboxes
+
 
 
 class ParseOptions(BaseModel):
@@ -80,6 +82,7 @@ class PageParser:
 
         self.concurrency_limit = concurrency_limit
         self.semaphore = asyncio.Semaphore(self.concurrency_limit)
+        self.semaphore_reader = asyncio.Semaphore(self.concurrency_limit)  # TODO(zihao) can larger. need meansure later
         self.cpu_executor = ThreadPoolExecutor(max_workers=os.cpu_count())
 
     @property
@@ -268,6 +271,7 @@ class PageParser:
 
         return result
 
+    # It is now deprecated
     async def _inference_with_vllm(self, image, prompt):
         task = OcrInferenceTask(
             start_child_span("OcrInferenceTask", None),
@@ -288,6 +292,7 @@ class PageParser:
         )
         return await task.inference_with_vllm()
 
+    # It is now deprecated
     async def _parse_single_image(
         self,
         origin_image,
@@ -436,9 +441,3 @@ class PageParser:
 
         return origin_image, image, prompt, scale_factor
 
-    def iter_picture_blocks(self, cells: dict, origin_image: Image.Image):
-        for info_block in cells["full_layout_info"]:
-            if info_block["category"] == "Picture":
-                x0, y0, x1, y1 = info_block["bbox"]
-                cropped_img = origin_image.crop((x0, y0, x1, y1))
-                yield info_block, cropped_img

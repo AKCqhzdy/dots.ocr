@@ -10,12 +10,14 @@ from pydantic import BaseModel
 
 from app.utils.executor.job_executor_pool import JobResponseModel
 from app.utils.executor.stats import OcrTaskStats
-from app.utils.executor.task_executor_pool import TaskExecutorPool
+from app.utils.executor.task_executor_pool import TaskExecutorPool, BatchTaskExecutorPool
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, start_child_span, traced
-from dots_ocr.model.inference import InferenceTask, OcrInferenceTask
+from dots_ocr.model.inference import InferenceTask, OcrInferenceTask, OfflineBatchInferenceTask,OfflineLayoutReaderInferenceTask
 from dots_ocr.utils.page_parser import PageParser
-
+from dots_ocr.utils.pdf_extractor import PdfExtractor
+from dots_ocr.model.layout_service import sort_bboxes
+from dots_ocr.utils.directory_entry import DirectoryStructure
 
 class OcrTaskModel(BaseModel):
     job_response: JobResponseModel
@@ -145,16 +147,22 @@ class OcrTask:
 
         return cells
 
+    def iter_picture_blocks(self, cells: dict, origin_image: Image.Image, category: list[str] = ["Picture"]):
+        for info_block in cells["full_layout_info"]:
+            if info_block["category"] in category:
+                x0, y0, x1, y1 = info_block["bbox"]
+                cropped_img = origin_image.crop((x0, y0, x1, y1))
+                yield info_block, cropped_img
     @traced()
-    async def _describe_pictures_in_page(self, cells: dict, origin_image: Image.Image):
+    async def _describe_pictures_in_page(self, cells: dict, origin_image: Image.Image, category: list[str] = ["Picture"]):
         prompt = self._parser.picture_description_prompt
         futures: list[asyncio.Future] = []
         picture_blocks: list[dict] = []
         try:
             idx = 0
             tasks: list[InferenceTask] = []
-            for picture_block, cropped_img in self._parser.iter_picture_blocks(
-                cells, origin_image
+            for picture_block, cropped_img in self.iter_picture_blocks(
+                cells, origin_image, category
             ):
                 future, task = await self._submit_describe_picture_task(
                     f"{self.job_id}-{self._page_index}-describe-{idx}",
@@ -423,3 +431,204 @@ class ImageOcrTask(OcrTask):
                 raise
 
         return cells
+
+
+
+
+class PipeOcrTask(OcrTask):
+    """A CPU-bound task."""
+
+    def __init__(
+        self,
+        page: fitz.Page,
+        layout_detection_pool: BatchTaskExecutorPool,
+        layout_reader_pool: TaskExecutorPool,
+        storage_manager: StorageManager, 
+        toc: dict,
+        pdf_extractor: PdfExtractor,
+        **kwargs):
+        super().__init__(**kwargs)
+        self._page_index = int(self._task_model.task_id)
+        self._page = page
+        self._layout_detection_pool = layout_detection_pool
+        self._layout_reader_pool = layout_reader_pool
+        self._storage_manager = storage_manager
+        self._toc = toc
+        self._pdf_extractor = pdf_extractor
+
+    @traced()
+    async def _submit_layout_detection_task(self, task_id, image):
+        task = OfflineBatchInferenceTask(
+            span=start_child_span("OfflineBatchInferenceTask", None),
+            task_id=task_id,
+            image=image,
+        )
+        await self._layout_detection_pool.add_task(task)
+        return await task.get_completion_future(), task
+    
+    @traced()
+    async def _submit_layout_reader_task(self, task_id, blocks, width, height):
+        task = OfflineLayoutReaderInferenceTask(
+            span=start_child_span("OfflineLayoutReaderInferenceTask", None),
+            task_id=task_id,
+            blocks=blocks,
+            width=width,
+            height=height,
+        )
+        await self._layout_reader_pool.add_task(task)
+        return await task.get_completion_future(), task
+
+
+    @traced()
+    async def _layout_reader(self, blocks, width, height):
+        async with self._parser.semaphore_reader:
+            bboxes = [info_block["bbox"] for info_block in blocks]
+            order = await sort_bboxes(bboxes, width, height)
+            sorted_blocks = [blocks[i] for i in order]
+            blocks[:] = sorted_blocks
+        
+    @traced()
+    async def _upload_results(self, result: dict):
+        page_upload_tasks = []
+        paths_to_upload = {
+            "md": result.get("md_content_path"),
+            "md_nohf": result.get("md_content_nohf_path"),
+            "json": result.get("layout_info_path"),
+        }
+
+        job_files = self._task_model.job_response.get_job_local_files()
+        for _, local_path in paths_to_upload.items():
+            if local_path:
+                file_name = Path(local_path).name
+                s3_key = f"{job_files.remote_output_file_key}/{file_name}"
+                task = asyncio.create_task(
+                    self._storage_manager.upload_file(
+                        job_files.remote_output_bucket,
+                        s3_key,
+                        local_path,
+                        self._task_model.job_response.is_s3,
+                    )
+                )
+                page_upload_tasks.append(task)
+        await asyncio.gather(*page_upload_tasks)
+        paths_to_upload["page_no"] = self._page_index
+        return paths_to_upload
+
+    @traced()
+    async def _run(self):
+        """
+        Returns:
+            dict: keys are "md", "md_nohf", "json", "page_no"
+        """
+        origin_image, scale_factor = self._pdf_extractor.page_to_image(self._page_index, self._parser.dpi)
+        # transform toc coordinates from pdf space to image space
+        logger.debug(f"Page index: {self._page_index}, TOC: {self._toc}")
+        if self._toc is not None:
+            for entry in self._toc:
+                entry["to"][0] = entry["to"][0] * scale_factor
+                entry["to"][1] = entry["to"][1] * scale_factor
+
+        # layout detection
+        try:
+            detection_future, detection_task = await self._submit_layout_detection_task(
+                f"{self.job_id}-{self._page_index}-layout-detection",
+                origin_image
+            )
+        except Exception as e:
+            if detection_task.is_timeout:
+                self._stats.status = "timeout"
+            logger.error(f"Error submitting layout detection task: {e}")
+            raise
+        try:
+            cells = detection_future
+            cells['page_no'] = self._page_index
+
+            if logger._core.min_level <= logger.level("DEBUG").no:
+                i=0
+                for info_block in cells["full_layout_info"]:
+                    i+=1
+                    self._pdf_extractor.crop_bbox(self._page_index, info_block['bbox'], f"/dots.ocr/test/outputs/crop/{self._page_index}/crop_{i}.png" ,self._parser.dpi)
+                logger.debug(f"Layout detection results: {cells}")
+
+        except Exception as e:
+            logger.error(f"Error while detecting layout: {e}")
+            raise
+        
+
+        # extract text for non-table/figure blocks
+        try:
+            # TODO(zihao): need align category between layout detection model and dots
+            for info_block in cells["full_layout_info"]:
+                if info_block["category"] in["Table", "Picture", "Formula"]:
+                    pass
+                else:
+                    block_in_pdf_size = [ i / scale_factor for i in info_block["bbox"] ]
+                    info_block["text"] = self._pdf_extractor.extract_text_from_page(
+                        self._page_index, block_in_pdf_size
+                    )
+            logger.debug(f"Extracted text results: {cells}")
+
+            # rebuild directory structure by toc
+            if self._toc is not None:
+                directory_structure = DirectoryStructure()
+                #PP-layout is good at detecting article title, abstract, refenences, so we don't use title entries of these categories
+                directory_structure.load_from_json(cells["full_layout_info"], ["Section-header","List-item"])
+                directory_structure.rebuild_directory_by_toc(self._toc)
+            logger.debug(f"rebuild directory structure successfully")
+        except Exception as e:
+            logger.error(f"Error while extracting: {e}")
+            raise
+
+        # layout reader to sort blocks
+        try:
+            reader_future, reader_task = await self._submit_layout_reader_task(
+                f"{self.job_id}-{self._page_index}-layout-reader",
+                cells["full_layout_info"],
+                cells['width'],
+                cells['height']
+            )
+        except Exception as e:
+            if reader_task.is_timeout:
+                self._stats.status = "timeout"
+            logger.error(f"Error while sorting blocks: {e}")
+            raise
+
+        try:
+            cells['full_layout_info'] = reader_future
+        except Exception as e:
+            logger.error(f"Error getting OCR inference result: {e}")
+            raise
+        
+        if self.describe_picture:
+            try:
+                await self._describe_pictures_in_page(
+                    cells,
+                    origin_image=origin_image,
+                    category= ["Picture","Table", "Formula"],
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error describing pictures in page {self._page_index}: {e}"
+                )
+                raise
+
+        try:
+            cells = await self._parser.save_results(
+                cells,
+                self._task_model.local_save_dir,
+                self._task_model.output_file_name,
+                origin_image,
+                scale_factor,
+            )
+            logger.debug(
+                f"Saved results for page {self._page_index} "
+                f"of doc {self._task_model.original_file_uri}: {cells}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error saving results for page {self._page_index} "
+                f"of doc {self._task_model.original_file_uri}: {e}"
+            )
+            raise
+
+        return await self._upload_results(cells)

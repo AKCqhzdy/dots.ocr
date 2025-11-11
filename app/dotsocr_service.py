@@ -31,13 +31,14 @@ from openai.types import CompletionUsage
 from aiorwlock import RWLock
 
 from app.utils.configs import INPUT_DIR, OUTPUT_DIR, Configs
-from app.utils.executor import Job, JobExecutorPool, JobResponseModel, TaskExecutorPool
+from app.utils.executor import Job, JobExecutorPool, JobResponseModel, TaskExecutorPool, BatchTaskExecutorPool
 from app.utils.executor.stats import ModelIdentifier, TokenUsageItem
 from app.utils.hash import compute_md5_file, compute_md5_string
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, setup_tracing, trace_span_async, traced
 from dots_ocr.model.inference import InferenceTaskOptions
+from dots_ocr.model.layout_service import get_layout_detection_service, get_layout_reader_service, get_layout_image
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
 from dots_ocr.utils.page_parser import PageParser, ParseOptions
@@ -68,6 +69,21 @@ describe_picture_task_executor_pool = TaskExecutorPool(
     max_queue_size=configs.DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE,
     name="PictureDescriptionTask",
 )
+# TODO(zihao): can i move it into lifespan? what's more, i deploy layout dectection model in cpu now. try to move it to gpu.
+if configs.PARSE_WITH_PIPELINE:
+    layout_detection_task_executor_pool = BatchTaskExecutorPool(
+        concurrent_task_limit=configs.CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT,
+        max_queue_size=configs.LAYOUT_DETECTION_TASK_QUEUE_MAX_SIZE,
+        name="LocalLayoutDetectionTask",
+        batch_collect_window=configs.LAYOUT_DETECTION_BATCH_COLLECT_WINDOW,
+        batch_handler=get_layout_image,
+    )
+    layout_reader_task_executor_pool = TaskExecutorPool(
+        concurrent_task_limit=configs.CONCURRENT_LAYOUT_READER_TASK_LIMIT,
+        max_queue_size=configs.LAYOUT_READER_TASK_QUEUE_MAX_SIZE,
+        name="LocalLayoutReaderTask",
+    )
+
 page_parser = PageParser(
     ocr_inference_task_options=InferenceTaskOptions(
         model_name="dotsocr",
@@ -98,6 +114,8 @@ page_parser = PageParser(
 dots_parser = DotsOCRParser(
     ocr_task_executor_pool=ocr_task_executor_pool,
     describe_picture_task_executor_pool=describe_picture_task_executor_pool,
+    layout_detection_task_executor_pool=layout_detection_task_executor_pool if configs.PARSE_WITH_PIPELINE else None,
+    layout_reader_task_executor_pool=layout_reader_task_executor_pool if configs.PARSE_WITH_PIPELINE else None,
     page_parser=page_parser,
     storage_manager=storage_manager,
 )
@@ -110,18 +128,29 @@ async def lifespan(_: FastAPI):
 
     logger.remove(0)
     logger.add(stderr, level=configs.LOG_LEVEL)
+    
+    if configs.PARSE_WITH_PIPELINE:
+        await get_layout_detection_service()
+        await get_layout_reader_service()
 
     await pg_vector_manager.ensure_table_exists()
 
     job_executor_pool.start()
     ocr_task_executor_pool.start()
     describe_picture_task_executor_pool.start()
+    if configs.PARSE_WITH_PIPELINE:
+        layout_detection_task_executor_pool.start()
+        layout_reader_task_executor_pool.start()
 
     yield
 
     job_executor_pool.stop()
     ocr_task_executor_pool.stop()
     describe_picture_task_executor_pool.stop()
+    if configs.PARSE_WITH_PIPELINE:
+        layout_detection_task_executor_pool.stop()
+        layout_reader_task_executor_pool.stop()
+
     await pg_vector_manager.flush()
     await pg_vector_manager.close()
 
@@ -366,7 +395,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 result,
                                 status,
                                 token_usage,
-                            ) in dots_parser.schedule_pdf_tasks(job_response):
+                            ) in dots_parser.schedule_pdf_tasks(job_response, configs.PARSE_WITH_PIPELINE):
                                 sum_token_usage(total_token_usage, token_usage)
                                 if status in ["fallback", "timeout", "failed"]:
                                     # TODO(tatiana): save failed/fallback task to OCRTable and

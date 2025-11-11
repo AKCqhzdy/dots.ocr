@@ -16,6 +16,7 @@ from app.utils.executor.stats import ModelIdentifier
 from app.utils.tracing import get_tracer, traced
 from dots_ocr.utils.image_utils import PILimage_to_base64, PILimage_to_base64_async
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
+from dots_ocr.model.layout_service import sort_bboxes
 
 
 class InferenceTaskOptions(BaseModel):
@@ -264,3 +265,109 @@ class OcrInferenceTask(InferenceTask):
                 }
             ]
         )
+
+
+
+class OfflineInferenceTask:
+    def __init__(
+        self,
+        span: trace.Span,
+        task_id: str,
+    ):
+        self._span = span
+        self._stats = InferenceTaskStats()
+        self._task_id = task_id
+        self._completion_future = asyncio.Future()
+        self._last_failure_reason = []
+        self.max_attempts = 1
+
+    @property
+    def task_id(self) -> str:
+        return self._task_id
+
+    @property
+    def is_timeout(self) -> bool:
+        return self._stats.is_timeout
+
+    def get_completion_future(self):
+        return self._completion_future
+    
+    async def process(self):
+        with trace.use_span(self._span, end_on_exit=True):
+            while self._stats.attempt_num < self.max_attempts:
+                self._span.add_event(f"attempt-{self._stats.attempt_num}")
+                with get_tracer().start_as_current_span(
+                    f"attempt-{self._stats.attempt_num}"
+                ) as span:
+                    self._stats.attempt_num += 1
+                    try:
+                        logger.debug(
+                            f"Inference task {self.task_id} started (attempt {self._stats.attempt_num})"
+                        )
+                        result = await self._run()
+                        self._completion_future.set_result(result)
+                        break
+                    except APITimeoutError as e:  # retry on timeout
+                        self._last_failure_reason.append(type(e).__name__)
+                        if self.is_last_attempt():
+                            self._completion_future.set_exception(e)
+                        span.record_exception(e)
+                    except Exception as e:
+                        self._last_failure_reason.append(type(e).__name__)
+                        logger.error(
+                            f"Inference task {self.task_id} failed: {self._last_failure_reason[-1]} {e}",
+                            exc_info=True,
+                        )
+                        self._completion_future.set_exception(e)
+                        span.record_exception(e)
+                        break
+    @traced()
+    async def _run(self):
+        pass
+        
+class OfflineBatchInferenceTask(OfflineInferenceTask):
+
+    def __init__(
+        self,
+        span: trace.Span,
+        task_id: str,
+        image: Image.Image,
+        **kwargs):
+        super().__init__(span=span, task_id=task_id,**kwargs)
+        self._image = image
+
+    @property
+    def task_id(self) -> str:
+        return self._task_id
+    
+    def get_completion_future(self):
+        return self._completion_future
+    
+class OfflineLayoutReaderInferenceTask(OfflineInferenceTask):
+
+    def __init__(
+        self,
+        span: trace.Span,
+        task_id: str,
+        blocks: list[dict],
+        width,
+        height,
+        **kwargs):
+        super().__init__(span=span, task_id=task_id, **kwargs)
+        self._blocks = blocks
+        self._width = width
+        self._height = height
+
+    @property
+    def task_id(self) -> str:
+        return self._task_id
+    
+    def get_completion_future(self):
+        return self._completion_future
+    
+    @traced()
+    async def _run(self):
+        bboxes = [info_block["bbox"] for info_block in self._blocks]
+        order = await sort_bboxes(bboxes, self._width, self._height)
+        sorted_blocks = [self._blocks[i] for i in order]
+        return sorted_blocks
