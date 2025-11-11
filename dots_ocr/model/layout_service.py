@@ -27,15 +27,72 @@ class LayoutDetectionService():
         Transform result to keep only label and bbox with float values.
         Both single and batch results return a list.
         """
-        # TODO(zihao): align the category label format with dotsocr
+
+        # TODO(zihao): merge figure_title to figure, table_title to table, etc.
+        def align_category(label: str) -> str:
+            """
+            dots_ocr supported categories:
+            ['Caption', 'Footnote', 'Formula', 'List-item', 'Page-footer', 'Page-header', 'Picture', 'Section-header', 'Table', 'Text', 'Title']
+
+            From paddle's documents, PP-DocLayout_plus-L supports 23 categories:
+            document title, paragraph title, text, page number, abstract, table of contents, references, footnotes, header, footer, algorithm, 
+            formula, formula number, image, figure caption, table, table caption, seal, figure title, figure, header image, footer image, and sidebar text
+
+            However, the actual output labels are different from the above names. Here only modify the categories which affect processing.
+            """
+
+            mapping = {
+                'doc_title': 'Title',
+                'paragraph_title': 'Section-header',
+                'text': 'Text',
+                'number': 'Text',
+                'page_number': 'Text',
+                'header': 'Page-header',
+                'footer': 'Page-footer',
+                'formula': 'Formula',
+                'formula_number': 'Text',
+                'table': 'Table',
+                'figure': 'Picture',
+            }
+            return mapping.get(label, label)
+        
+        def exclude_overlap_boxes(boxes: List[Dict[str, Any]]):
+            """
+            Exclude boxes that are largely overlapped by other boxes.
+            If the IoU of two boxes is greater than 0.9, the smaller box will be removed.
+            """
+            def iou(box1, box2):
+                x1 = max(box1[0], box2[0])
+                y1 = max(box1[1], box2[1])
+                x2 = min(box1[2], box2[2])
+                y2 = min(box1[3], box2[3])
+                inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+                box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+                box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+                union_area = box1_area + box2_area - inter_area
+                return inter_area / union_area if union_area > 0 else 0
+            
+            to_remove = set()
+            for i in range(len(boxes)):
+                for j in range(len(boxes)):
+                    if i != j:
+                        iou_value = iou(boxes[i]['bbox'], boxes[j]['bbox'])
+                        if iou_value > 0.9:
+                            area_i = (boxes[i]['bbox'][2] - boxes[i]['bbox'][0]) * (boxes[i]['bbox'][3] - boxes[i]['bbox'][1])
+                            area_j = (boxes[j]['bbox'][2] - boxes[j]['bbox'][0]) * (boxes[j]['bbox'][3] - boxes[j]['bbox'][1])
+                            if area_i < area_j:
+                                to_remove.add(i)
+            boxes[:] = [box for idx, box in enumerate(boxes) if idx not in to_remove]
+        
         def transform_single(item: Dict[str, Any]) -> Dict[str, Any]:
             transformed_boxes = [
                 {
-                    'category': bbox['label'],
+                    'category': align_category(bbox['label']),
                     'bbox': [float(coord) for coord in bbox['coordinate']]
                 }
                 for bbox in item.get('boxes', [])
             ]
+            exclude_overlap_boxes(transformed_boxes)
             img = (item.img)['res'] # PP-DocLayout_plus-L will resize the image if parse pdf. It seems is dpi=200 but I don't find relative doc.
             width, height = img.size
             return {

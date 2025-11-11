@@ -141,13 +141,9 @@ class DirectoryStructure:
     def get_all_headers(self):
         return self.headers
 
-    def load_from_json(self, json_data):
+    def load_from_json(self, json_data, categories=['Title', 'Section-header', 'List-item']):
         for info_block in json_data:
-            if (
-                info_block.get("category") == "Section-header"
-                or info_block.get("category") == "Title"
-                or info_block.get('category') == 'List-item'
-            ):  #  or info_block.get('category') == 'List-item'  (Perhaps it is very long and recompute many time)
+            if info_block.get("category") in categories:
                 self.add_header(info_block)
 
     def load_from_json_path(self, json_path):

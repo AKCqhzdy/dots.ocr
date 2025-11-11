@@ -225,6 +225,7 @@ class DotsOCRParser:
                         layout_detection_pool=self._layout_detection_task_executor_pool,
                         layout_reader_pool=self._layout_reader_task_executor_pool,
                         storage_manager=self._storage_manager,
+                        toc=page_toc,
                         pdf_extractor=pdf_extractor,
                     )
                 else:

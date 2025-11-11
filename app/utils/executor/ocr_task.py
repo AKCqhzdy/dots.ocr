@@ -17,6 +17,7 @@ from dots_ocr.model.inference import InferenceTask, OcrInferenceTask, OfflineBat
 from dots_ocr.utils.page_parser import PageParser
 from dots_ocr.utils.pdf_extractor import PdfExtractor
 from dots_ocr.model.layout_service import sort_bboxes
+from dots_ocr.utils.directory_entry import DirectoryStructure
 
 class OcrTaskModel(BaseModel):
     job_response: JobResponseModel
@@ -146,14 +147,14 @@ class OcrTask:
 
         return cells
 
-    def iter_picture_blocks(self, cells: dict, origin_image: Image.Image):
+    def iter_picture_blocks(self, cells: dict, origin_image: Image.Image, category: list[str] = ["Picture"]):
         for info_block in cells["full_layout_info"]:
-            if info_block["category"] == "Picture":
+            if info_block["category"] in category:
                 x0, y0, x1, y1 = info_block["bbox"]
                 cropped_img = origin_image.crop((x0, y0, x1, y1))
                 yield info_block, cropped_img
     @traced()
-    async def _describe_pictures_in_page(self, cells: dict, origin_image: Image.Image):
+    async def _describe_pictures_in_page(self, cells: dict, origin_image: Image.Image, category: list[str] = ["Picture"]):
         prompt = self._parser.picture_description_prompt
         futures: list[asyncio.Future] = []
         picture_blocks: list[dict] = []
@@ -161,7 +162,7 @@ class OcrTask:
             idx = 0
             tasks: list[InferenceTask] = []
             for picture_block, cropped_img in self.iter_picture_blocks(
-                cells, origin_image
+                cells, origin_image, category
             ):
                 future, task = await self._submit_describe_picture_task(
                     f"{self.job_id}-{self._page_index}-describe-{idx}",
@@ -443,6 +444,7 @@ class PipeOcrTask(OcrTask):
         layout_detection_pool: BatchTaskExecutorPool,
         layout_reader_pool: TaskExecutorPool,
         storage_manager: StorageManager, 
+        toc: dict,
         pdf_extractor: PdfExtractor,
         **kwargs):
         super().__init__(**kwargs)
@@ -451,6 +453,7 @@ class PipeOcrTask(OcrTask):
         self._layout_detection_pool = layout_detection_pool
         self._layout_reader_pool = layout_reader_pool
         self._storage_manager = storage_manager
+        self._toc = toc
         self._pdf_extractor = pdf_extractor
 
     @traced()
@@ -518,6 +521,12 @@ class PipeOcrTask(OcrTask):
             dict: keys are "md", "md_nohf", "json", "page_no"
         """
         origin_image, scale_factor = self._pdf_extractor.page_to_image(self._page_index, self._parser.dpi)
+        # transform toc coordinates from pdf space to image space
+        logger.debug(f"Page index: {self._page_index}, TOC: {self._toc}")
+        if self._toc is not None:
+            for entry in self._toc:
+                entry["to"][0] = entry["to"][0] * scale_factor
+                entry["to"][1] = entry["to"][1] * scale_factor
 
         # layout detection
         try:
@@ -550,10 +559,7 @@ class PipeOcrTask(OcrTask):
         try:
             # TODO(zihao): need align category between layout detection model and dots
             for info_block in cells["full_layout_info"]:
-                if (
-                    info_block["category"] == "table"
-                    or info_block["category"] == "figure"
-                ):
+                if info_block["category"] in["Table", "Picture", "Formula"]:
                     pass
                 else:
                     block_in_pdf_size = [ i / scale_factor for i in info_block["bbox"] ]
@@ -561,12 +567,19 @@ class PipeOcrTask(OcrTask):
                         self._page_index, block_in_pdf_size
                     )
             logger.debug(f"Extracted text results: {cells}")
+
+            # rebuild directory structure by toc
+            if self._toc is not None:
+                directory_structure = DirectoryStructure()
+                #PP-layout is good at detecting article title, abstract, refenences, so we don't use title entries of these categories
+                directory_structure.load_from_json(cells["full_layout_info"], ["Section-header","List-item"])
+                directory_structure.rebuild_directory_by_toc(self._toc)
+            logger.debug(f"rebuild directory structure successfully")
         except Exception as e:
             logger.error(f"Error while extracting: {e}")
             raise
 
         # layout reader to sort blocks
-        
         try:
             reader_future, reader_task = await self._submit_layout_reader_task(
                 f"{self.job_id}-{self._page_index}-layout-reader",
@@ -588,7 +601,11 @@ class PipeOcrTask(OcrTask):
         
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image=origin_image)
+                await self._describe_pictures_in_page(
+                    cells,
+                    origin_image=origin_image,
+                    category= ["Picture","Table", "Formula"],
+                )
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in page {self._page_index}: {e}"

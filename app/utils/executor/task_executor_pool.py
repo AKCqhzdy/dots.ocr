@@ -109,33 +109,34 @@ class BatchTaskExecutorPool():
                 if task._span and task._span.is_recording():
                     links.append(trace.Link(task._span.get_span_context()))
 
-            with get_tracer().start_as_current_span(
-                f"{self.name}.process_batch",
-                links=links
-            ) as batch_span:
-                try:
-                    logger.info(f"Processing layout detection batch of size {len(batch)}.")
-                    batch_span.set_attribute("batch.size", len(batch))
-                    
-                    images_to_process = [task._image for task in batch]
-                    futures = [task._completion_future for task in batch]
+            # TODO(zihao): find a better way to trace batch processing
+            # with get_tracer().start_as_current_span(
+            #     f"{self.name}.process_batch",
+            #     links=links
+            # ) as batch_span:
+            try:
+                logger.info(f"Processing layout detection batch of size {len(batch)}.")
+                # batch_span.set_attribute("batch.size", len(batch))
+                
+                images_to_process = [task._image for task in batch]
+                futures = [task._completion_future for task in batch]
 
-                    results = await self.batch_handler(images_to_process)
+                results = await self.batch_handler(images_to_process)
 
-                    for future, result in zip(futures, results):
-                        if not future.done():
-                            future.set_result(result)
-                except asyncio.CancelledError:
-                    logger.warning(f"[{self.name}] Worker was cancelled. The current batch of size {len(batch)} might be lost.")
-                    batch_span.set_status(trace.Status(trace.StatusCode.ERROR, "Worker cancelled"))
-                    for future in futures:
-                        if not future.done():
-                            future.set_exception(asyncio.CancelledError("The processing worker was cancelled."))
-                    break
-                except Exception as e:
-                    logger.error(f"[{self.name}] Error processing batch: {e}", exc_info=True)
-                    batch_span.record_exception(e)
-                    batch_span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-                    for future in futures:
-                        if not future.done():
-                            future.set_exception(e)
+                for future, result in zip(futures, results):
+                    if not future.done():
+                        future.set_result(result)
+            except asyncio.CancelledError:
+                logger.warning(f"[{self.name}] Worker was cancelled. The current batch of size {len(batch)} might be lost.")
+                # batch_span.set_status(trace.Status(trace.StatusCode.ERROR, "Worker cancelled"))
+                for future in futures:
+                    if not future.done():
+                        future.set_exception(asyncio.CancelledError("The processing worker was cancelled."))
+                break
+            except Exception as e:
+                logger.error(f"[{self.name}] Error processing batch: {e}", exc_info=True)
+                # batch_span.record_exception(e)
+                # batch_span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                for future in futures:
+                    if not future.done():
+                        future.set_exception(e)

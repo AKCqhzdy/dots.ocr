@@ -69,7 +69,7 @@ describe_picture_task_executor_pool = TaskExecutorPool(
     max_queue_size=configs.DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE,
     name="PictureDescriptionTask",
 )
-# TODO(zihao): can i move it into lifespan?
+# TODO(zihao): can i move it into lifespan? what's more, i deploy layout dectection model in cpu now. try to move it to gpu.
 if configs.PARSE_WITH_PIPELINE:
     layout_detection_task_executor_pool = BatchTaskExecutorPool(
         concurrent_task_limit=configs.CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT,
