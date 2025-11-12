@@ -91,7 +91,7 @@ class Configs(BaseSettings):
     CLEANUP_LOCAL: bool = True
 
     # Whether to parse the document with the pipeline.
-    PARSE_WITH_PIPELINE: bool = True
+    PARSE_WITH_PIPELINE: bool = False
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
 INPUT_DIR: Path = BASE_DIR / "input"
