@@ -17,13 +17,13 @@ class Configs(BaseSettings):
     # model. Increasing this may improve GPU utilization to some extent but at the cost of the
     # model server memory usage.
     CONCURRENT_DESCRIBE_PICTURE_TASK_LIMIT: int = 16
-    
-    # The max number of concurrent picture description requests that can be sent to the layout 
+
+    # The max number of concurrent picture description requests that can be sent to the layout
     # detection model (PP-DocLayout_plus-L). Increasing this may improve CPU utilization and
     # increase the speed to some extent but at the cost of the model server memory usage.
     CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT: int = 2
 
-    # The max number of concurrent picture description requests that can be sent to the layout 
+    # The max number of concurrent picture description requests that can be sent to the layout
     # reader model. Increasing this may improve CPU utilization and increase the speed to some
     # extent but at the cost of the model server memory usage.
     CONCURRENT_LAYOUT_READER_TASK_LIMIT: int = 2
@@ -50,13 +50,15 @@ class Configs(BaseSettings):
 
     # The number of layout detection tasks that can be queued. Increase this may improve resource
     # overlapping, but at the cost of memory for buffering the extracted images from docs,
-    LAYOUT_DETECTION_TASK_QUEUE_MAX_SIZE: int = 2 * CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT
+    LAYOUT_DETECTION_TASK_QUEUE_MAX_SIZE: int = (
+        2 * CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT
+    )
 
     # The number of layout reader tasks that can be queued. Increase this may improve resource
     # overlapping, but at the cost of memory for buffering all blocks identified from the documents.
     LAYOUT_READER_TASK_QUEUE_MAX_SIZE: int = 4
 
-    LAYOUT_DETECTION_BATCH_COLLECT_WINDOW: float = 0.2 # seconds
+    LAYOUT_DETECTION_BATCH_COLLECT_WINDOW: float = 0.2  # seconds
 
     OCR_INFERENCE_HOST: str = "localhost"
     OCR_INFERENCE_PORT: int = 8000
@@ -86,12 +88,16 @@ class Configs(BaseSettings):
     OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: Optional[str] = None
     # The timeout value for all outgoing traces in milliseconds. Default is 10 seconds.
     OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: int = 10_000  # 10 seconds
+    # Whether to enable Prometheus metrics endpoint.
+    # metrics_path: "/metrics"
+    OTEL_ENABLE_METRICS: bool = False
 
     # Whether to delete local result files after each job is completed.
     CLEANUP_LOCAL: bool = True
 
     # Whether to parse the document with the pipeline.
     PARSE_WITH_PIPELINE: bool = False
+
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
 INPUT_DIR: Path = BASE_DIR / "input"

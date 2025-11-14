@@ -15,6 +15,7 @@ File resources:
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 from contextlib import asynccontextmanager
@@ -24,16 +25,18 @@ from sys import stderr
 
 import httpx
 import uvicorn
+from aiorwlock import RWLock
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
 from openai.types import CompletionUsage
-from aiorwlock import RWLock
 
 from app.utils.configs import INPUT_DIR, OUTPUT_DIR, Configs
 from app.utils.executor import Job, JobExecutorPool, JobResponseModel, TaskExecutorPool, BatchTaskExecutorPool
 from app.utils.executor.stats import ModelIdentifier, TokenUsageItem
 from app.utils.hash import compute_md5_file, compute_md5_string
+from app.utils.instrumentor import setup_instrumentors
+from app.utils.metrics import setup_metrics
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, setup_tracing, trace_span_async, traced
@@ -162,12 +165,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+meter = setup_metrics(configs.OTEL_ENABLE_METRICS)
 setup_tracing(
-    app,
     configs.DOTSOCR_OTEL_SERVICE_NAME,
     configs.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
     configs.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT,
 )
+setup_instrumentors(app, configs.OTEL_ENABLE_METRICS, meter)
 
 
 @traced()
@@ -675,6 +679,7 @@ _last_health_check_time: datetime | None = None
 _last_health_check_response: dict | None = None
 _health_check_rwlock = RWLock()
 
+
 async def health_check():
     global _last_health_check_time, _last_health_check_response
     now = datetime.now(UTC)
@@ -690,7 +695,7 @@ async def health_check():
                 headers=_last_health_check_response["headers"],
                 media_type=_last_health_check_response["media_type"],
             )
-    
+
     async with _health_check_rwlock.writer_lock:
         # Double-checked locking
         now = datetime.now(UTC)
@@ -746,12 +751,15 @@ async def health_check():
         except httpx.TimeoutException as e:
             result = {
                 "detail": f"Health check failed: Request to DotsOCR service timed out. Error: {e}"
-        }
+            }
         except Exception as e:
             result = {
                 "detail": f"An unexpected error occurred during health check. Error: {e}"
             }
-        return JSONResponse(status_code=503, content={"success": False, "status": 503, **result})
+        return JSONResponse(
+            status_code=503, content={"success": False, "status": 503, **result}
+        )
+
 
 @app.get("/health")
 async def health():
