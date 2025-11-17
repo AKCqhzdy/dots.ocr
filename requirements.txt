@@ -15,6 +15,7 @@ httpx
 greenlet
 pydantic-settings
 rapidfuzz
+aiorwlock
 
 # additional
 pytest
