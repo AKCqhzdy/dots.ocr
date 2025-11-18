@@ -38,5 +38,8 @@ opentelemetry-instrumentation-openai==0.47.3
 opentelemetry-instrumentation-threading==0.58b0
 prometheus-fastapi-instrumentator==7.1.0
 
-RUN python3 -m pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ && \
-    python3 -m pip install paddleocr
+# need download by run outside the requirement
+# RUN python3 -m pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ && \
+#    python3 -m pip install paddleocr
+paddlepaddle==3.2.0
+paddleocr
