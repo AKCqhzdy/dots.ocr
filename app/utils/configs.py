@@ -67,7 +67,7 @@ class Configs(BaseSettings):
     )
 
     INTERN_VL_HOST: str = "internvl3-5"
-    INTERN_VL_PORT: int = 6008
+    INTERN_VL_PORT: int = 8000
 
     # TODO(tatiana): need to check the timeout semantics in OpenAI API.
     # Exclude queuing time from the timeout.
