@@ -108,6 +108,8 @@ class SectionHeader:
             return float('inf')
 
         # Calculate the distance from a point to the bbox
+        if 'to' not in entry:
+            return 0
         x = entry['to'][0]
         y = entry['to'][1]
         x1, y1, x2, y2 = self.bbox
