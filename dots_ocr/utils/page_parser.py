@@ -112,13 +112,21 @@ class PageParser:
     @property
     def picture_description_prompt(self) -> str:
         return (
-            "Extract the information from this image objectively. "
-            "Don't omit a single detail. "
-            "Do not provide extra analysis. "
-            "If the image is one or multiple charts, after output the extracted information, "
-            "also return the extracted data in one or multiple clean markdown table format. "
-            "The table should include appropriate headers and rows matching the chart data. "
-            "If it is not a chart, just output the extracted information."
+            "Extract the information from this image objectively and concisely. "
+            "Do not add any extra explanation, commentary, or surrounding text. "
+            "Detect the main content type in the image and follow the corresponding rule exactly:\n\n"
+            "1. If the image contains one or more tables or charts/graphs:\n"
+            "   - Output ONLY clean markdown tables that faithfully reproduce all data from the image.\n"
+            "   - Use accurate headers and all rows/values exactly as shown.\n"
+            "   - If there are multiple tables/charts, output each as a separate markdown table with a single empty line in between.\n"
+            "   - Do not number them or add any titles unless they are explicitly present in the image.\n\n"
+            "2. If the image primarily contains mathematical formulas/equations:\n"
+            "   - Output ONLY the formulas in proper LaTeX format.\n"
+            "   - Use display math mode ($$...$$) for standalone equations and inline $...$ where appropriate.\n"
+            "   - If there are multiple equations, separate them with a single empty line.\n\n"
+            "3. If the image is neither:\n"
+            "   - Summarize it in three sentences. \n\n"
+            "Never add phrases like 'Here is the extracted information', 'Table:', 'Formula:', or any other wrapper text."
         )
 
     def prepare_image(

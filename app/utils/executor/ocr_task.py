@@ -559,7 +559,7 @@ class PipeOcrTask(OcrTask):
         try:
             # TODO(zihao): need align category between layout detection model and dots
             for info_block in cells["full_layout_info"]:
-                if info_block["category"] in["Table", "Picture", "Formula"]:
+                if info_block["category"] in["Table", "Picture", "Formula", "Image"]:
                     pass
                 else:
                     block_in_pdf_size = [ i / scale_factor for i in info_block["bbox"] ]
@@ -580,31 +580,31 @@ class PipeOcrTask(OcrTask):
             raise
 
         # layout reader to sort blocks
-        try:
-            reader_future, reader_task = await self._submit_layout_reader_task(
-                f"{self.job_id}-{self._page_index}-layout-reader",
-                cells["full_layout_info"],
-                cells['width'],
-                cells['height']
-            )
-        except Exception as e:
-            if reader_task.is_timeout:
-                self._stats.status = "timeout"
-            logger.error(f"Error while sorting blocks: {e}")
-            raise
+        # try:
+        #     reader_future, reader_task = await self._submit_layout_reader_task(
+        #         f"{self.job_id}-{self._page_index}-layout-reader",
+        #         cells["full_layout_info"],
+        #         cells['width'],
+        #         cells['height']
+        #     )
+        # except Exception as e:
+        #     if reader_task.is_timeout:
+        #         self._stats.status = "timeout"
+        #     logger.error(f"Error while sorting blocks: {e}")
+        #     raise
 
-        try:
-            cells['full_layout_info'] = reader_future
-        except Exception as e:
-            logger.error(f"Error getting OCR inference result: {e}")
-            raise
+        # try:
+        #     cells['full_layout_info'] = reader_future
+        # except Exception as e:
+        #     logger.error(f"Error getting OCR inference result: {e}")
+        #     raise
         
         if self.describe_picture:
             try:
                 await self._describe_pictures_in_page(
                     cells,
                     origin_image=origin_image,
-                    category= ["Picture","Table", "Formula"],
+                    category= ["Picture", "Table", "Formula", "Figure", "Picture"],
                 )
             except Exception as e:
                 logger.error(

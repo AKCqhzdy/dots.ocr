@@ -21,12 +21,12 @@ class Configs(BaseSettings):
     # The max number of concurrent picture description requests that can be sent to the layout
     # detection model (PP-DocLayout_plus-L). Increasing this may improve CPU utilization and
     # increase the speed to some extent but at the cost of the model server memory usage.
-    CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT: int = 2
+    CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT: int = 8
 
     # The max number of concurrent picture description requests that can be sent to the layout
     # reader model. Increasing this may improve CPU utilization and increase the speed to some
     # extent but at the cost of the model server memory usage.
-    CONCURRENT_LAYOUT_READER_TASK_LIMIT: int = 2
+    CONCURRENT_LAYOUT_READER_TASK_LIMIT: int = 8
 
     # The max number of concurrent OCR tasks that can be run. Increasing this may improve overall
     # resource overlapping, but at the cost of memory for buffering the extracted images from docs,
@@ -56,7 +56,9 @@ class Configs(BaseSettings):
 
     # The number of layout reader tasks that can be queued. Increase this may improve resource
     # overlapping, but at the cost of memory for buffering all blocks identified from the documents.
-    LAYOUT_READER_TASK_QUEUE_MAX_SIZE: int = 4
+    LAYOUT_READER_TASK_QUEUE_MAX_SIZE: int = (
+        2 * CONCURRENT_LAYOUT_READER_TASK_LIMIT
+    )
 
     LAYOUT_DETECTION_BATCH_COLLECT_WINDOW: float = 0.2  # seconds
 
@@ -78,7 +80,7 @@ class Configs(BaseSettings):
     # If the number of failed tasks is greater than this threshold, the job will be considered failed.
     TASK_FAIL_THRESHOLD: float = 0.1
 
-    LOG_LEVEL: str = "INFO"
+    LOG_LEVEL: str = "DEBUG"
 
     DOTSOCR_OTEL_SERVICE_NAME: str = "dots.ocr"
     # Endpoint URL for trace data only, with an optionally-specified port number.
@@ -93,10 +95,10 @@ class Configs(BaseSettings):
     OTEL_ENABLE_METRICS: bool = False
 
     # Whether to delete local result files after each job is completed.
-    CLEANUP_LOCAL: bool = True
+    CLEANUP_LOCAL: bool = False
 
     # Whether to parse the document with the pipeline.
-    PARSE_WITH_PIPELINE: bool = False
+    PARSE_WITH_PIPELINE: bool = True
 
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent

@@ -12,7 +12,7 @@ _layout_detection_model_service = None
 class LayoutDetectionService():
     def __init__(
         self,
-        model_name="PP-DocLayout_plus-L",
+        model_name="PP-DocLayoutV2",
         batch_size=1
     ):
         self._model_name = model_name
@@ -38,6 +38,11 @@ class LayoutDetectionService():
             document title, paragraph title, text, page number, abstract, table of contents, references, footnotes, header, footer, algorithm, 
             formula, formula number, image, figure caption, table, table caption, seal, figure title, figure, header image, footer image, and sidebar text
 
+            From paddle's documents, PP-DocLayoutV2 supports 25 categories:
+            document title, section header, text, vertical text, page number, abstract, table of contents, references, footnote, image caption, 
+            header, footer, header image, footer image, algorithm, inline formula, display formula, formula number, image, table, figure title
+             (figure title, table title, chart title), seal, chart, aside text, and reference content.
+
             However, the actual output labels are different from the above names. Here only modify the categories which affect processing.
             """
 
@@ -50,39 +55,42 @@ class LayoutDetectionService():
                 'header': 'Page-header',
                 'footer': 'Page-footer',
                 'formula': 'Formula',
+                'display_formula': 'Formula',
+                'inline_formula': 'Inline-Formula',
                 'formula_number': 'Text',
+                'image': 'Picture',
                 'table': 'Table',
-                'figure': 'Picture',
+                'figure': 'Figure',
             }
             return mapping.get(label, label)
         
-        def exclude_overlap_boxes(boxes: List[Dict[str, Any]]):
-            """
-            Exclude boxes that are largely overlapped by other boxes.
-            If the IoU of two boxes is greater than 0.9, the smaller box will be removed.
-            """
-            def iou(box1, box2):
-                x1 = max(box1[0], box2[0])
-                y1 = max(box1[1], box2[1])
-                x2 = min(box1[2], box2[2])
-                y2 = min(box1[3], box2[3])
-                inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-                box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-                box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-                union_area = box1_area + box2_area - inter_area
-                return inter_area / union_area if union_area > 0 else 0
+        def remove_contained_boxes(boxes: List[Dict[str, Any]], thresh: float = 0.9):
+            # debug
+            return 
+            if not boxes:
+                return
+                
+            def area(b): return (b[2] - b[0]) * (b[3] - b[1])
+            def inter(b1, b2):
+                return max(0, min(b1[2], b2[2]) - max(b1[0], b2[0])) * \
+                    max(0, min(b1[3], b2[3]) - max(b1[1], b2[1]))
+
+            boxes.sort(key=lambda x: area(x['bbox']), reverse=True)
             
-            to_remove = set()
+            keep = [True] * len(boxes)
+            
             for i in range(len(boxes)):
-                for j in range(len(boxes)):
-                    if i != j:
-                        iou_value = iou(boxes[i]['bbox'], boxes[j]['bbox'])
-                        if iou_value > 0.9:
-                            area_i = (boxes[i]['bbox'][2] - boxes[i]['bbox'][0]) * (boxes[i]['bbox'][3] - boxes[i]['bbox'][1])
-                            area_j = (boxes[j]['bbox'][2] - boxes[j]['bbox'][0]) * (boxes[j]['bbox'][3] - boxes[j]['bbox'][1])
-                            if area_i < area_j:
-                                to_remove.add(i)
-            boxes[:] = [box for idx, box in enumerate(boxes) if idx not in to_remove]
+                if not keep[i]:
+                    continue
+                bi = boxes[i]['bbox']
+                for j in range(i + 1, len(boxes)):
+                    if not keep[j]:
+                        continue
+                    bj = boxes[j]['bbox']
+                    if inter(bi, bj) / area(bj) > thresh:
+                        keep[j] = False
+            
+            boxes[:] = [b for b, k in zip(boxes, keep) if k]
         
         def transform_single(item: Dict[str, Any]) -> Dict[str, Any]:
             transformed_boxes = [
@@ -92,7 +100,7 @@ class LayoutDetectionService():
                 }
                 for bbox in item.get('boxes', [])
             ]
-            exclude_overlap_boxes(transformed_boxes)
+            remove_contained_boxes(transformed_boxes)
             img = (item.img)['res'] # PP-DocLayout_plus-L will resize the image if parse pdf. It seems is dpi=200 but I don't find relative doc.
             width, height = img.size
             return {

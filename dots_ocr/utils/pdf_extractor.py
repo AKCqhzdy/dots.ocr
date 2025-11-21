@@ -103,11 +103,12 @@ class PdfExtractor:
         
         for lvl, title, page, detail in raw_toc:
             page -= 1
-            assert detail.get("to") not in [None, ""], \
-                f"TOC entry destination not found for title: {title}"
-            to_cor = list(detail.get("to", []))
-            height = self.page_size(page)[1]
-            to_cor[1] = height - to_cor[1]  # Convert PDF coordinate to top-left origin coordinate
+            if detail.get("to") in [None, ""]: # skip invalid entries
+                to_cor = None
+            else:
+                to_cor = list(detail.get("to", []))
+                height = self.page_size(page)[1]
+                to_cor[1] = height - to_cor[1]  # Convert PDF coordinate to top-left origin coordinate
             entry = {
                 "level": lvl,
                 "text": title,
