@@ -17,7 +17,7 @@ from app.utils.tracing import get_tracer, traced
 from dots_ocr.utils.image_utils import PILimage_to_base64, PILimage_to_base64_async
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
 from dots_ocr.model.layout_service import sort_bboxes
-
+from dots_ocr.utils.paddle_postprocess import transform_latex, transform_table
 
 class InferenceTaskOptions(BaseModel):
     model_name: str
@@ -169,7 +169,7 @@ class InferenceTask:
         try:
             start_time = time.perf_counter()
             logger.debug(
-                f"Sending request {self._task_id} to vLLM model{self._options.model_name}: image size: {self.size()/1024:.2f} KB. image resolution: {self._image.width}x{self._image.height}. "
+                f"Sending request {self._task_id} to vLLM model {self._options.model_name}: image size: {self.size()/1024:.2f} KB. image resolution: {self._image.width}x{self._image.height}. "
             )
             response = await self._client.chat.completions.create(
                 messages=messages,
@@ -196,7 +196,17 @@ class InferenceTask:
                     f"Missing model_id or provider in response for task {self.task_id}, model_id: {model_id}, provider: {model_provider}, usage: {response.usage}"
                 )
             response = response.choices[0].message.content
-            return response
+            if self._options.model_name == "PaddleOCR-VL":
+                if prompt == "Formula Recognition:":
+                    posprcessed_response = transform_latex(response)
+                elif prompt == "Table Recognition:":
+                    posprcessed_response = transform_table(response)
+                else:
+                    posprcessed_response = response
+                return posprcessed_response
+            else:
+                return response
+        
         except httpx.TimeoutException:
             logger.error(f"request timeout for task {self.task_id}")
             # TODO(tatiana): why except the error and return error str?

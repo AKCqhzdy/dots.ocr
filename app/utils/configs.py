@@ -62,14 +62,20 @@ class Configs(BaseSettings):
 
     LAYOUT_DETECTION_BATCH_COLLECT_WINDOW: float = 0.2  # seconds
 
+    OCR_INFERENCE_NAME: str = "dotsocr"
     OCR_INFERENCE_HOST: str = "localhost"
     OCR_INFERENCE_PORT: int = 8000
     OCR_HEALTH_CHECK_URL: str = (
         f"http://{OCR_INFERENCE_HOST}:{OCR_INFERENCE_PORT}/health"
     )
 
+    INTERN_VL_NAME: str = "InternVL3_5-2B"
     INTERN_VL_HOST: str = "internvl3-5"
     INTERN_VL_PORT: int = 8000
+
+    PADDLEOCR_VL_NAME: str = "PaddleOCR-VL"
+    PADDLEOCR_VL_HOST: str = "paddleocr"
+    PADDLEOCR_VL_PORT: int = 8000 # can't use PADDLEOCR_PORT due to conflict
 
     # TODO(tatiana): need to check the timeout semantics in OpenAI API.
     # Exclude queuing time from the timeout.

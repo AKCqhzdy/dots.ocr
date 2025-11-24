@@ -1,5 +1,5 @@
 from loguru import logger
-from typing import Union, List, Dict, Any
+from typing import Tuple, Union, List, Dict, Any
 from PIL import Image
 import asyncio
 import numpy as np
@@ -22,7 +22,7 @@ class LayoutDetectionService():
     async def _transform_result(
         self,
         result: Union[Dict[str, Any], List[Dict[str, Any]]]
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Transform result to keep only label and bbox with float values.
         Both single and batch results return a list.
@@ -61,12 +61,11 @@ class LayoutDetectionService():
                 'image': 'Picture',
                 'table': 'Table',
                 'figure': 'Figure',
+                'chart': 'Chart',
             }
             return mapping.get(label, label)
         
         def remove_contained_boxes(boxes: List[Dict[str, Any]], thresh: float = 0.9):
-            # debug
-            return 
             if not boxes:
                 return
                 
@@ -79,6 +78,7 @@ class LayoutDetectionService():
             
             keep = [True] * len(boxes)
             
+            inline_formula_boxes = []
             for i in range(len(boxes)):
                 if not keep[i]:
                     continue
@@ -89,10 +89,13 @@ class LayoutDetectionService():
                     bj = boxes[j]['bbox']
                     if inter(bi, bj) / area(bj) > thresh:
                         keep[j] = False
+                        if boxes[j]['category'] == "Inline-Formula":
+                            inline_formula_boxes.append(boxes[j])
             
             boxes[:] = [b for b, k in zip(boxes, keep) if k]
+            return inline_formula_boxes
         
-        def transform_single(item: Dict[str, Any]) -> Dict[str, Any]:
+        def transform_single(item: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             transformed_boxes = [
                 {
                     'category': align_category(bbox['label']),
@@ -100,7 +103,7 @@ class LayoutDetectionService():
                 }
                 for bbox in item.get('boxes', [])
             ]
-            remove_contained_boxes(transformed_boxes)
+            inline_formula_boxes = remove_contained_boxes(transformed_boxes)
             img = (item.img)['res'] # PP-DocLayout_plus-L will resize the image if parse pdf. It seems is dpi=200 but I don't find relative doc.
             width, height = img.size
             return {
@@ -108,12 +111,27 @@ class LayoutDetectionService():
                 'width': width,
                 'height': height,
                 'full_layout_info': transformed_boxes
-            }
+            }, {
+                'page_no': item['page_index'],
+                'width': width,
+                'height': height,
+                'full_layout_info': inline_formula_boxes
+            } 
         
         if isinstance(result, list):
-            return [transform_single(item) for item in result]
+            transformed_results = []
+            inline_formula_boxes_all = []
+            for item in result:
+                transformed_item, inline_formula_boxes = transform_single(item)
+                transformed_results.append(transformed_item)
+                inline_formula_boxes_all.append(inline_formula_boxes)
         else:
-            return [transform_single(result)]
+            transformed_item, inline_formula_boxes = transform_single(item)
+            transformed_results.append(transformed_item)
+            inline_formula_boxes_all.append(inline_formula_boxes)
+        return transformed_results, inline_formula_boxes_all
+        
+            
 
     async def _get_layout_image(
         self,

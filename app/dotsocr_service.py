@@ -89,7 +89,7 @@ if configs.PARSE_WITH_PIPELINE:
 
 page_parser = PageParser(
     ocr_inference_task_options=InferenceTaskOptions(
-        model_name="dotsocr",
+        model_name=configs.OCR_INFERENCE_NAME,
         model_host=configs.OCR_INFERENCE_HOST,
         model_port=configs.OCR_INFERENCE_PORT,
         temperature=0.1,
@@ -98,9 +98,9 @@ page_parser = PageParser(
         timeout=configs.API_TIMEOUT,
     ),
     describe_picture_task_options=InferenceTaskOptions(
-        model_name="InternVL3_5-2B",
-        model_host=configs.INTERN_VL_HOST,
-        model_port=configs.INTERN_VL_PORT,
+        model_name=configs.PADDLEOCR_VL_NAME,
+        model_host=configs.PADDLEOCR_VL_HOST,
+        model_port=configs.PADDLEOCR_VL_PORT,
         temperature=0.1,
         top_p=1.0,
         max_completion_tokens=8192,
@@ -681,6 +681,9 @@ _health_check_rwlock = RWLock()
 
 
 async def health_check():
+    return JSONResponse(
+        status_code=200, content={"success": True, "status": 200}
+    )
     global _last_health_check_time, _last_health_check_response
     now = datetime.now(UTC)
     async with _health_check_rwlock.reader_lock:

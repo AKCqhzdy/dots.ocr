@@ -121,11 +121,11 @@ class BatchTaskExecutorPool():
                 images_to_process = [task._image for task in batch]
                 futures = [task._completion_future for task in batch]
 
-                results = await self.batch_handler(images_to_process)
+                results, inline_formula_boxes_all = await self.batch_handler(images_to_process)
 
-                for future, result in zip(futures, results):
+                for future, result, inline_formula_boxes in zip(futures, results, inline_formula_boxes_all):
                     if not future.done():
-                        future.set_result(result)
+                        future.set_result((result, inline_formula_boxes))
             except asyncio.CancelledError:
                 logger.warning(f"[{self.name}] Worker was cancelled. The current batch of size {len(batch)} might be lost.")
                 # batch_span.set_status(trace.Status(trace.StatusCode.ERROR, "Worker cancelled"))
