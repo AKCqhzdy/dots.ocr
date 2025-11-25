@@ -98,9 +98,9 @@ page_parser = PageParser(
         timeout=configs.API_TIMEOUT,
     ),
     describe_picture_task_options=InferenceTaskOptions(
-        model_name=configs.PADDLEOCR_VL_NAME,
-        model_host=configs.PADDLEOCR_VL_HOST,
-        model_port=configs.PADDLEOCR_VL_PORT,
+        model_name=configs.PADDLEOCR_VL_NAME if configs.PARSE_WITH_PIPELINE else configs.INTERN_VL_NAME,
+        model_host=configs.PADDLEOCR_VL_HOST if configs.PARSE_WITH_PIPELINE else configs.INTERN_VL_HOST,
+        model_port=configs.PADDLEOCR_VL_PORT if configs.PARSE_WITH_PIPELINE else configs.INTERN_VL_PORT,
         temperature=0.1,
         top_p=1.0,
         max_completion_tokens=8192,

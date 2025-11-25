@@ -101,10 +101,10 @@ class Configs(BaseSettings):
     OTEL_ENABLE_METRICS: bool = False
 
     # Whether to delete local result files after each job is completed.
-    CLEANUP_LOCAL: bool = False
+    CLEANUP_LOCAL: bool = True
 
     # Whether to parse the document with the pipeline.
-    PARSE_WITH_PIPELINE: bool = True
+    PARSE_WITH_PIPELINE: bool = False
 
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent

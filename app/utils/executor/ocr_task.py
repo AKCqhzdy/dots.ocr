@@ -160,13 +160,17 @@ class OcrTask:
         try:
             idx = 0
             tasks: list[InferenceTask] = []
+            use_internvl = False
+            if not categorys:
+                categorys = ["Picture"]
+                use_internvl = True
             for picture_block, cropped_img, category in self.iter_picture_blocks(
                 cells, origin_image, categorys
             ):
                 future, task = await self._submit_describe_picture_task(
                     f"{self.job_id}-{self._page_index}-describe-{idx}",
                     cropped_img,
-                    self._parser.picture_description_prompt(category),
+                    self._parser.picture_description_prompt(category if not use_internvl else "internvl"),
                 )
                 idx += 1
                 futures.append(future)
@@ -331,7 +335,7 @@ class PdfOcrTask(OcrTask):
 
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image=image)
+                await self._describe_pictures_in_page(cells, origin_image=image, categorys=None)
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in page {self._page_index}: {e}"
@@ -405,7 +409,7 @@ class ImageOcrTask(OcrTask):
 
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image=image)
+                await self._describe_pictures_in_page(cells, origin_image=image, categorys=None)
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in image {self._task_model.original_file_uri}: {e}"
