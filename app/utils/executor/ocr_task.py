@@ -545,6 +545,8 @@ class PipeOcrTask(OcrTask):
         try:
             cells, inline_formula_boxes = detection_future
             cells['page_no'] = self._page_index
+            if inline_formula_boxes is not None:
+                inline_formula_boxes['page_no'] = self._page_index
 
             # if logger._core.min_level <= logger.level("DEBUG").no:
             #     i=0
