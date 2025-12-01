@@ -62,20 +62,30 @@ class Configs(BaseSettings):
 
     LAYOUT_DETECTION_BATCH_COLLECT_WINDOW: float = 0.2  # seconds
 
-    OCR_INFERENCE_NAME: str = "dotsocr"
+
+    # local
     OCR_INFERENCE_HOST: str = "localhost"
-    OCR_INFERENCE_PORT: int = 8000
+    OCR_INFERENCE_PORT: int = 18000
+    INTERN_VL_HOST: str = "localhost"
+    INTERN_VL_PORT: int = 18001
+    PADDLEOCR_VL_HOST: str = "localhost"
+    PADDLEOCR_VL_PORT: int = 18001
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: Optional[str] = "http://localhost:4317"
+
+    OCR_INFERENCE_NAME: str = "dotsocr"
+    # OCR_INFERENCE_HOST: str = "localhost"
+    # OCR_INFERENCE_PORT: int = 8000
     OCR_HEALTH_CHECK_URL: str = (
         f"http://{OCR_INFERENCE_HOST}:{OCR_INFERENCE_PORT}/health"
     )
 
     INTERN_VL_NAME: str = "InternVL3_5-2B"
-    INTERN_VL_HOST: str = "internvl3-5"
-    INTERN_VL_PORT: int = 8000
+    # INTERN_VL_HOST: str = "internvl3-5"
+    # INTERN_VL_PORT: int = 8000
 
     PADDLEOCR_VL_NAME: str = "PaddleOCR-VL"
-    PADDLEOCR_VL_HOST: str = "paddleocr"
-    PADDLEOCR_VL_PORT: int = 8000 # can't use PADDLEOCR_PORT due to conflict
+    # PADDLEOCR_VL_HOST: str = "paddleocr"
+    # PADDLEOCR_VL_PORT: int = 8000 # can't use PADDLEOCR_PORT due to conflict
 
     # TODO(tatiana): need to check the timeout semantics in OpenAI API.
     # Exclude queuing time from the timeout.
@@ -93,7 +103,7 @@ class Configs(BaseSettings):
     # If not provided, the tracing is disabled.
     # Example value:
     #   gRPC: "http://localhost:4317"
-    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: Optional[str] = None
+    # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: Optional[str] = None
     # The timeout value for all outgoing traces in milliseconds. Default is 10 seconds.
     OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: int = 10_000  # 10 seconds
     # Whether to enable Prometheus metrics endpoint.
@@ -101,9 +111,9 @@ class Configs(BaseSettings):
     OTEL_ENABLE_METRICS: bool = False
 
     # Whether to delete local result files after each job is completed.
-    CLEANUP_LOCAL: bool = False
+    CLEANUP_LOCAL: bool = True
 
-    # Whether to parse the document with the pipeline.
+    # Open it for pipeline parsing prepare
     PARSE_WITH_PIPELINE: bool = True
 
 

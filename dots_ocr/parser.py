@@ -182,7 +182,6 @@ class DotsOCRParser:
         self,
         job_response: JobResponseModel,
         pdf_extractor: PdfExtractor,
-        parse_with_pipeline: bool = False,
     ):
         toc = pdf_extractor.get_clean_toc()
         job_files = job_response.get_job_local_files()
@@ -212,7 +211,7 @@ class DotsOCRParser:
                 else:
                     page_toc = None
                 
-                if parse_with_pipeline:
+                if job_response.use_pipeline:
                     task = PipeOcrTask(
                         page=doc[page_index],
                         span=get_tracer().start_span(
@@ -324,13 +323,18 @@ class DotsOCRParser:
     async def schedule_pdf_tasks(
         self,
         job_response: JobResponseModel,
-        parse_with_pipeline: bool = False,
     ):
         pdf_path = str(job_response.get_job_local_files().input_file_path)
         pdf_extractor = PdfExtractor(pdf_path)
+        if not pdf_extractor.is_structured and job_response.use_pipeline:
+            logger.warning(
+                f"PDF {job_response.input_s3_path} is unstructured, "
+                f"but use_pipeline is set to True. "
+                f"Falling back to use_pipeline=False."
+            )
+            job_response.use_pipeline = False
         async for task_result, task_status, token_usage in self._schedule_pdf_tasks(
             job_response,
-            pdf_extractor,
-            parse_with_pipeline = parse_with_pipeline if pdf_extractor.is_structured else False,
+            pdf_extractor
         ):
             yield task_result, task_status, token_usage

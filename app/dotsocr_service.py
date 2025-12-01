@@ -97,7 +97,16 @@ page_parser = PageParser(
         max_completion_tokens=32768,
         timeout=configs.API_TIMEOUT,
     ),
-    describe_picture_task_options=InferenceTaskOptions(
+    describe_picture_task_options_internvl=InferenceTaskOptions(
+        model_name=configs.INTERN_VL_NAME,
+        model_host=configs.INTERN_VL_HOST,
+        model_port=configs.INTERN_VL_PORT,
+        temperature=0.1,
+        top_p=1.0,
+        max_completion_tokens=8192,
+        timeout=configs.API_TIMEOUT,
+    ),
+    describe_picture_task_options_paddleocr=InferenceTaskOptions(
         model_name=configs.PADDLEOCR_VL_NAME,
         model_host=configs.PADDLEOCR_VL_HOST,
         model_port=configs.PADDLEOCR_VL_PORT,
@@ -399,7 +408,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 result,
                                 status,
                                 token_usage,
-                            ) in dots_parser.schedule_pdf_tasks(job_response, configs.PARSE_WITH_PIPELINE):
+                            ) in dots_parser.schedule_pdf_tasks(job_response):
                                 sum_token_usage(total_token_usage, token_usage)
                                 if status in ["fallback", "timeout", "failed"]:
                                     # TODO(tatiana): save failed/fallback task to OCRTable and
@@ -576,6 +585,7 @@ async def parse_file(
     rebuild_directory: bool = Form(False),
     describe_picture: bool = Form(True),
     overwrite: bool = Form(False),
+    use_pipeline: bool = Form(False)
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
@@ -639,6 +649,7 @@ async def parse_file(
         rebuild_directory=rebuild_directory,
         describe_picture=describe_picture,
         overwrite=overwrite,
+        use_pipeline=use_pipeline,
     )
 
     logger.info(f"Job {ocr_job_id} created. {job_response}")
@@ -681,9 +692,6 @@ _health_check_rwlock = RWLock()
 
 
 async def health_check():
-    return JSONResponse(
-        status_code=200, content={"success": True, "status": 200}
-    )
     global _last_health_check_time, _last_health_check_response
     now = datetime.now(UTC)
     async with _health_check_rwlock.reader_lock:

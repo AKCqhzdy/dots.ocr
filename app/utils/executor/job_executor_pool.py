@@ -78,6 +78,7 @@ class JobResponseModel(BaseModel):
     rebuild_directory: bool = False
     describe_picture: bool = False
     overwrite: bool = False
+    use_pipeline: bool = False
 
     # model_name: usage_json from openai.types.CompletionUsage
     token_usage: list[TokenUsageItem] = []

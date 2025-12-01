@@ -43,7 +43,8 @@ class PageParser:
     def __init__(
         self,
         ocr_inference_task_options: InferenceTaskOptions = None,
-        describe_picture_task_options: InferenceTaskOptions = None,
+        describe_picture_task_options_internvl: InferenceTaskOptions = None,
+        describe_picture_task_options_paddleocr: InferenceTaskOptions = None,
         parse_options: ParseOptions = None,
         concurrency_limit=8,
     ):
@@ -58,7 +59,8 @@ class PageParser:
             self._image_options = ParseOptions()
 
         self._ocr_inference_task_options = ocr_inference_task_options
-        self._describe_picture_task_options = describe_picture_task_options
+        self._describe_picture_task_options_internvl = describe_picture_task_options_internvl
+        self._describe_picture_task_options_paddleocr = describe_picture_task_options_paddleocr
         if self._ocr_inference_task_options is None:
             self._ocr_inference_task_options = InferenceTaskOptions(
                 model_name="dotsocr",
@@ -69,11 +71,21 @@ class PageParser:
                 max_completion_tokens=32768,
                 timeout=10,
             )
-        if self._describe_picture_task_options is None:
-            self._describe_picture_task_options = InferenceTaskOptions(
+        if self._describe_picture_task_options_internvl is None:
+            self._describe_picture_task_options_internvl = InferenceTaskOptions(
                 model_name="InternVL3_5-2B",
-                model_host="internvl3-5",
-                model_port=6008,
+                model_host="internvl",
+                model_port=8000,
+                temperature=0.1,
+                top_p=1.0,
+                max_completion_tokens=8192,
+                timeout=10,
+            )
+        if self._describe_picture_task_options_paddleocr is None:
+            self._describe_picture_task_options_paddleocr = InferenceTaskOptions(
+                model_name="PaddleOCR-VL",
+                model_host="paddleocr",
+                model_port=8000,
                 temperature=0.1,
                 top_p=1.0,
                 max_completion_tokens=8192,
@@ -94,8 +106,11 @@ class PageParser:
         return self._ocr_inference_task_options
 
     @property
-    def describe_picture_task_options(self):
-        return self._describe_picture_task_options
+    def describe_picture_task_options_internvl(self):
+        return self._describe_picture_task_options_internvl
+    @property
+    def describe_picture_task_options_paddleocr(self):
+        return self._describe_picture_task_options_paddleocr
 
     @property
     def dpi(self):
@@ -306,7 +321,7 @@ class PageParser:
     async def _inference_with_vllm_intern_vl(self, image, prompt):
         task = InferenceTask(
             start_child_span("InferenceTask", None),
-            self._describe_picture_task_options,
+            self._describe_picture_task_options_internvl,
             "describe_picture_task",
             image,
             prompt,

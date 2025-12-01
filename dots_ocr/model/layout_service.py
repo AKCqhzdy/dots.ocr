@@ -213,7 +213,7 @@ _layout_reader_model_service = None
 class LayoutReaderService():
     def __init__(
         self,
-        model_name="/app/models/MonkeyOCR/Relation",
+        model_name="/root/workspace/Relation",
     ):
         self._model_name = model_name
         self._model_service = LayoutLMv3ForTokenClassification.from_pretrained(pretrained_model_name_or_path=model_name)

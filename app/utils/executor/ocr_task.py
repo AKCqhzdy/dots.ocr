@@ -95,13 +95,14 @@ class OcrTask:
         return task.get_completion_future(), task
 
     @traced()
-    async def _submit_describe_picture_task(self, task_id, image, prompt):
+    async def _submit_describe_picture_task(self, task_id, image, category, use_internvl):
+
         task = InferenceTask(
             start_child_span(f"DescribePictureTask {task_id}"),
-            self._parser.describe_picture_task_options,
+            self._parser.describe_picture_task_options_internvl if use_internvl else self._parser.describe_picture_task_options_paddleocr,
             task_id,
             image,
-            prompt,
+            self._parser.picture_description_prompt(category if not use_internvl else "internvl"),
         )
         await self._describe_picture_pool.add_task(task)
         return task.get_completion_future(), task
@@ -160,13 +161,19 @@ class OcrTask:
         try:
             idx = 0
             tasks: list[InferenceTask] = []
+            use_internvl = False
+            if not categorys:
+                categorys = ["Picture"]
+                use_internvl = True
+            use_internvl = True # always use internvl!!!!!!!!!
             for picture_block, cropped_img, category in self.iter_picture_blocks(
                 cells, origin_image, categorys
             ):
                 future, task = await self._submit_describe_picture_task(
                     f"{self.job_id}-{self._page_index}-describe-{idx}",
                     cropped_img,
-                    self._parser.picture_description_prompt(category),
+                    category,
+                    use_internvl,
                 )
                 idx += 1
                 futures.append(future)
@@ -331,7 +338,7 @@ class PdfOcrTask(OcrTask):
 
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image=image)
+                await self._describe_pictures_in_page(cells, origin_image=image, categorys=None)
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in page {self._page_index}: {e}"
@@ -405,7 +412,7 @@ class ImageOcrTask(OcrTask):
 
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image=image)
+                await self._describe_pictures_in_page(cells, origin_image=image, categorys=None)
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in image {self._task_model.original_file_uri}: {e}"
