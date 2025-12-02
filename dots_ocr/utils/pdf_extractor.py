@@ -118,7 +118,7 @@ class PdfExtractor:
         if page_no < 0 or page_no >= self.num_pages:
             raise ValueError(f"Page number {page_no} out of range [0, {self.num_pages-1}]")
         page = self.pdf_document[page_no]
-        if formula_blocks is None:
+        if formula_blocks is None or formula_blocks == []:
             return self.extract_text(page, bbox)
         else:
             return self.extract_text_with_formulas(page, bbox, formula_blocks)

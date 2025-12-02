@@ -548,6 +548,8 @@ class PipeOcrTask(OcrTask):
         try:
             cells, inline_formula_boxes = detection_future
             cells['page_no'] = self._page_index
+            if inline_formula_boxes is not None:
+                inline_formula_boxes['page_no'] = self._page_index
 
             # if logger._core.min_level <= logger.level("DEBUG").no:
             #     i=0
@@ -600,12 +602,12 @@ class PipeOcrTask(OcrTask):
                     info_block["text"] = self._pdf_extractor.extract_text_from_page(
                         self._page_index,
                         block_in_pdf_size,
-                        current_block_formulas if current_block_formulas is not None else None,
+                        current_block_formulas,
                     )
             logger.debug(f"Extracted text results: {cells}")
 
             # rebuild directory structure by toc
-            if self._toc is not None:
+            if self._toc is not None and self._toc != []:
                 directory_structure = DirectoryStructure()
                 #PP-layout is good at detecting article title, abstract, refenences, so we don't use title entries of these categories
                 directory_structure.load_from_json(cells["full_layout_info"], ["Section-header","List-item"])

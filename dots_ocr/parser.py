@@ -209,7 +209,7 @@ class DotsOCRParser:
                 if len(toc) > 0:
                     page_toc = toc[page_index] if page_index in toc else []
                 else:
-                    page_toc = None
+                    page_toc = []
                 
                 if job_response.use_pipeline:
                     task = PipeOcrTask(
