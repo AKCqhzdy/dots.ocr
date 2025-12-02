@@ -126,23 +126,45 @@ class PageParser:
 
     def picture_description_prompt(self, typ) -> str:
         if typ == "internvl":
-            return (
-                "Extract the information from this image objectively and concisely. "
-                "Do not add any extra explanation, commentary, or surrounding text. "
-                "Detect the main content type in the image and follow the corresponding rule exactly:\n\n"
-                "1. If the image contains one or more tables or charts/graphs:\n"
-                "   - Output ONLY clean markdown tables that faithfully reproduce all data from the image.\n"
-                "   - Use accurate headers and all rows/values exactly as shown.\n"
-                "   - If there are multiple tables/charts, output each as a separate markdown table with a single empty line in between.\n"
-                "   - Do not number them or add any titles unless they are explicitly present in the image.\n\n"
-                "2. If the image primarily contains mathematical formulas/equations:\n"
-                "   - Output ONLY the formulas in proper LaTeX format.\n"
-                "   - Use display math mode ($$...$$) for standalone equations and inline $...$ where appropriate.\n"
-                "   - If there are multiple equations, separate them with a single empty line.\n\n"
-                "3. If the image is neither:\n"
-                "   - Summarize it in three sentences. \n\n"
-                "Never add phrases like 'Here is the extracted information', 'Table:', 'Formula:', or any other wrapper text."
-            )
+            return """
+You are an expert image analyzer. The input image belongs to exactly one of the following four categories:
+
+1. Table → contains structured tables or tabular data
+2. Chart → bar chart, line chart, pie chart, scatter plot, radar chart, etc.
+3. Formula → mathematical equations, chemical formulas, physical formulas, handwritten or printed formulas
+4. Picture → all other images (photo, illustration, screenshot, diagram without table/chart/formula)
+
+Strict output rules:
+
+If the image is Table:
+- First line: **Type: Table**
+- Output ONLY clean Markdown tables.
+- Include all headers and data exactly as shown.
+- Do not add any text outside the Markdown table.
+- Multiple tables are separated by a blank line.
+
+If the image is Chart:
+- First line: **Type: Chart**
+- Extract all data and convert each chart into a clean Markdown table with clear headers.
+- Output ONLY the Markdown tables, no explanations.
+- Multiple charts are separated by a blank line.
+
+If the image is Formula:
+- First line: **Type: Formula**
+- Output ONLY LaTeX equations using $$ delimiters.
+- One equation per line if there are multiple.
+- Do not add any text outside the LaTeX.
+
+If the image is Picture:
+- First line: **Type: Picture**
+- Then list the 5 most prominent visual features in short bullet points (object, color, layout, style, text content if any).
+- Keep total output under 150 words.
+
+Output in English only.
+Never add extra explanations, apologies, or code fences.
+Always classify correctly and follow the corresponding format strictly.
+"""
+
         elif typ == 'Test':
             return 'OCR:'
         elif typ == 'Table':

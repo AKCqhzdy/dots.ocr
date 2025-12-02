@@ -555,7 +555,7 @@ class PipeOcrTask(OcrTask):
             #     i=0
             #     for info_block in cells["full_layout_info"]:
             #         i+=1
-            #         self._pdf_extractor.crop_bbox(self._page_index, info_block['bbox'], f"/dots.ocr/test/outputs/crop/{self._page_index}/crop_{i}.png" ,self._parser.dpi)
+            #         self._pdf_extractor.crop_bbox(self._page_index, info_block['bbox'], f"/mnt/d/downloaded_files/crop_image/attn/{self._page_index}/crop_{i}_{info_block['category']}.png" ,self._parser.dpi)
             #     logger.debug(f"Layout detection results: {cells}")
 
         except Exception as e:
@@ -594,7 +594,8 @@ class PipeOcrTask(OcrTask):
                         for info_block_f in inline_formula_boxes["full_layout_info"]:
                             if is_box_in_container(info_block_f["bbox"], info_block["bbox"]):
                                 # assert each inline formula box is within only one text block
-                                info_block_f['test'] = info_block_f['text'] = info_block_f['text'][1:-1]
+                                if info_block_f['text'].startswith('$$') and info_block_f['text'].endswith('$$'):
+                                    info_block_f['text'] = info_block_f['text'] = info_block_f['text'][1:-1]
                                 block_in_pdf_size_f = [i / scale_factor for i in info_block_f["bbox"]]
                                 info_block_f['bbox'] = block_in_pdf_size_f
                                 current_block_formulas.append(info_block_f)
@@ -642,7 +643,7 @@ class PipeOcrTask(OcrTask):
                 await self._describe_pictures_in_page(
                     cells,
                     origin_image=origin_image,
-                    categorys = ["Table", "Formula", "Chart"], # "Picture",
+                    categorys = ["Table", "Formula", "Chart", "Picture"], # if use paddle need exclude Picture
                 )
             except Exception as e:
                 logger.error(
