@@ -36,6 +36,10 @@ class InferenceTaskOptions(BaseModel):
                 return self.timeout[-1]
             return self.timeout[attempt_index]
         return self.timeout
+    
+class ApiInferenceTaskOptions(InferenceTaskOptions):
+    api_key: str
+    api_base_url: str
 
 
 class InferenceTaskStats(BaseModel):
@@ -72,6 +76,8 @@ class InferenceTask:
 
     @property
     def model_address(self) -> str:
+        if isinstance(self._options, ApiInferenceTaskOptions):
+            return self._options.api_base_url
         return f"http://{self._options.model_host}:{self._options.model_port}/v1"
 
     @property
@@ -140,8 +146,12 @@ class InferenceTask:
     @traced()
     async def inference_with_vllm(self, prompt=None):
         if self._client is None:
+            api_key = None
+            if isinstance(self._options, ApiInferenceTaskOptions):
+                if self._options.api_key:
+                    api_key = self._options.api_key
             self._client = AsyncOpenAI(
-                api_key=f'{os.environ.get("API_KEY", "0")}',
+                api_key=api_key,
                 base_url=self.model_address,
                 timeout=6000,
                 max_retries=0,
