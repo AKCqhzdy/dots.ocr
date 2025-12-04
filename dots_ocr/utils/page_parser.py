@@ -6,6 +6,7 @@ from typing import Literal
 
 from fitz import Page
 from PIL import Image
+from loguru import logger
 from pydantic import BaseModel
 
 from app.utils.tracing import start_child_span, traced
@@ -45,6 +46,7 @@ class PageParser:
         ocr_inference_task_options: InferenceTaskOptions = None,
         describe_picture_task_options_internvl: InferenceTaskOptions = None,
         describe_picture_task_options_paddleocr: InferenceTaskOptions = None,
+        describe_picture_task_options_api: InferenceTaskOptions = None,
         parse_options: ParseOptions = None,
         concurrency_limit=8,
     ):
@@ -61,6 +63,7 @@ class PageParser:
         self._ocr_inference_task_options = ocr_inference_task_options
         self._describe_picture_task_options_internvl = describe_picture_task_options_internvl
         self._describe_picture_task_options_paddleocr = describe_picture_task_options_paddleocr
+        self._describe_picture_task_options_api = describe_picture_task_options_api
         if self._ocr_inference_task_options is None:
             self._ocr_inference_task_options = InferenceTaskOptions(
                 model_name="dotsocr",
@@ -91,7 +94,9 @@ class PageParser:
                 max_completion_tokens=8192,
                 timeout=10,
             )
-
+        if self._describe_picture_task_options_api is None:
+            logger.warning("api based describe picture task options is not provided. If use api based describe picture, it will raise error.")
+            
         self.concurrency_limit = concurrency_limit
         self.semaphore = asyncio.Semaphore(self.concurrency_limit)
         self.semaphore_reader = asyncio.Semaphore(self.concurrency_limit)  # TODO(zihao) can larger. need meansure later
@@ -111,6 +116,9 @@ class PageParser:
     @property
     def describe_picture_task_options_paddleocr(self):
         return self._describe_picture_task_options_paddleocr
+    @property
+    def describe_picture_task_options_api(self):
+        return self._describe_picture_task_options_api
 
     @property
     def dpi(self):
@@ -124,8 +132,18 @@ class PageParser:
     def max_pixels(self):
         return self._image_options.max_pixels
 
-    def picture_description_prompt(self, typ) -> str:
-        if typ == "internvl":
+    def get_describe_option(self, option) -> str:
+        if option == "paddleocr":
+            return self._describe_picture_task_options_paddleocr
+        elif option == "internvl":
+            return self._describe_picture_task_options_internvl
+        elif option == "api":
+            return self._describe_picture_task_options_api
+        else:
+            raise ValueError(f"Unknown describe option: {option}")
+
+    def get_describe_prompt(self, option, typ) -> str:
+        if option == "api" or option == "internvl":
             return """
 You are an expert image analyzer. The input image belongs to exactly one of the following four categories:
 

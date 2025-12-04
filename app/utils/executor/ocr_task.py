@@ -95,14 +95,14 @@ class OcrTask:
         return task.get_completion_future(), task
 
     @traced()
-    async def _submit_describe_picture_task(self, task_id, image, category, use_internvl):
+    async def _submit_describe_picture_task(self, task_id, image, category, option: str):
 
         task = InferenceTask(
             start_child_span(f"DescribePictureTask {task_id}"),
-            self._parser.describe_picture_task_options_internvl if use_internvl else self._parser.describe_picture_task_options_paddleocr,
+            self._parser.get_describe_option(option),
             task_id,
             image,
-            self._parser.picture_description_prompt(category if not use_internvl else "internvl"),
+            self._parser.get_describe_prompt(option, category)
         )
         await self._describe_picture_pool.add_task(task)
         return task.get_completion_future(), task
@@ -161,11 +161,11 @@ class OcrTask:
         try:
             idx = 0
             tasks: list[InferenceTask] = []
-            use_internvl = False
-            if not categorys:
-                categorys = ["Picture"]
-                use_internvl = True
-            use_internvl = True # always use internvl!!!!!!!!!
+            # use_internvl = False
+            # if not categorys:
+            #     categorys = ["Picture"]
+            #     use_internvl = True
+            option = "api" # now all description task use api!!!!!!
             for picture_block, cropped_img, category in self.iter_picture_blocks(
                 cells, origin_image, categorys
             ):
@@ -173,7 +173,7 @@ class OcrTask:
                     f"{self.job_id}-{self._page_index}-describe-{idx}",
                     cropped_img,
                     category,
-                    use_internvl,
+                    option,
                 )
                 idx += 1
                 futures.append(future)

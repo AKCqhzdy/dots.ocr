@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import List, Optional
+import os
 
 from pydantic_settings import BaseSettings
 
@@ -63,7 +64,7 @@ class Configs(BaseSettings):
     LAYOUT_DETECTION_BATCH_COLLECT_WINDOW: float = 0.2  # seconds
 
 
-    ## local
+    # ## local
     # OCR_INFERENCE_HOST: str = "localhost"
     # OCR_INFERENCE_PORT: int = 18000
     # INTERN_VL_HOST: str = "localhost"
@@ -85,7 +86,12 @@ class Configs(BaseSettings):
 
     PADDLEOCR_VL_NAME: str = "PaddleOCR-VL"
     PADDLEOCR_VL_HOST: str = "paddleocr"
-    PADDLEOCR_VL_PORT: int = 8000 # can't use PADDLEOCR_PORT due to conflict
+    PADDLEOCR_VL_PORT: int = 8000 # havn't use now
+
+    API_KEY: str = "sk-fb7c44bbf29540c78bc650296029506f" # os.environ.get("API_KEY", "")
+    API_BASE_URL: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    API_MODEL_NAME: str = "qwen-vl-plus"
+
 
     # TODO(tatiana): need to check the timeout semantics in OpenAI API.
     # Exclude queuing time from the timeout.

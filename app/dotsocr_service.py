@@ -40,7 +40,7 @@ from app.utils.metrics import setup_metrics
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, setup_tracing, trace_span_async, traced
-from dots_ocr.model.inference import InferenceTaskOptions
+from dots_ocr.model.inference import InferenceTaskOptions, ApiInferenceTaskOptions
 from dots_ocr.model.layout_service import get_layout_detection_service, get_layout_reader_service, get_layout_image
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
@@ -114,6 +114,18 @@ page_parser = PageParser(
         top_p=1.0,
         max_completion_tokens=8192,
         timeout=configs.API_TIMEOUT,
+    ),
+    describe_picture_task_options_api = ApiInferenceTaskOptions(
+        model_name=configs.API_MODEL_NAME,
+        model_host="None", # modify the definition of inference task options later
+        model_port=0, # modify the definition of inference task options later
+        api_base_url=configs.API_BASE_URL,
+        api_key=configs.API_KEY,
+        temperature=0.1,
+        top_p=1.0,
+        max_completion_tokens=32768,
+        timeout=configs.API_TIMEOUT,
+        max_attempts=3,
     ),
     parse_options=ParseOptions(
         dpi=configs.DPI,
