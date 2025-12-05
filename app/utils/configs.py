@@ -71,7 +71,7 @@ class Configs(BaseSettings):
 
     # TODO(tatiana): need to check the timeout semantics in OpenAI API.
     # Exclude queuing time from the timeout.
-    API_TIMEOUT: List[int] = [60, 120, 120]
+    API_TIMEOUT: List[int] = [300, 600, 600]
 
     TASK_RETRY_COUNT: int = 3
 
