@@ -704,6 +704,9 @@ _health_check_rwlock = RWLock()
 
 
 async def health_check():
+    return JSONResponse(
+        status_code=200, content={"success": "true", "status_code": 200}
+    )
     global _last_health_check_time, _last_health_check_response
     now = datetime.now(UTC)
     async with _health_check_rwlock.reader_lock:

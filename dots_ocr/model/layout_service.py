@@ -59,6 +59,8 @@ class LayoutDetectionService():
                 'inline_formula': 'Inline-Formula',
                 'formula_number': 'Text',
                 'image': 'Picture',
+                'header-image': 'Picture',
+                'footer-image': 'Picture',
                 'table': 'Table',
                 'figure': 'Figure',
                 'chart': 'Chart',
