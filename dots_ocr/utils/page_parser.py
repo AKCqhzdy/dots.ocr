@@ -147,12 +147,17 @@ class PageParser:
             return """
 You are an expert image analyzer. The input image belongs to exactly one of the following four categories:
 
-1. Table → contains structured tables or tabular data
-2. Chart → bar chart, line chart, pie chart, scatter plot, radar chart, etc.
-3. Formula → mathematical equations, chemical formulas, physical formulas, handwritten or printed formulas
-4. Picture → all other images (photo, illustration, screenshot, diagram without table/chart/formula)
+1. Text → contains only text content, may have inline formulas
+2. Table → contains structured tables or tabular data
+3. Chart → bar chart, line chart, pie chart, scatter plot, radar chart, etc.
+4. Formula → mathematical equations, chemical formulas, physical formulas, handwritten or printed formulas
+5. Picture → all other images (photo, illustration, screenshot, diagram without table/chart/formula)
 
 Strict output rules:
+If the image is Text:
+- First line: **Type: Text**
+- Output ONLY plain text content extracted from the image.
+- if there are inline formulas, please use LaTeX format enclosed in $$ delimiters.
 
 If the image is Table:
 - First line: **Type: Table**
@@ -175,12 +180,13 @@ If the image is Formula:
 
 If the image is Picture:
 - First line: **Type: Picture**
-- Then list the 5 most prominent visual features in short bullet points (object, color, layout, style, text content if any).
+- Then provide a concise bullet-point description (3–7 bullets) of the most visually significant aspects of the image.
+- The model may freely choose which aspects matter most (e.g., objects, composition, colors, style, relationships, notable details, or text if present).
 - Keep total output under 150 words.
 
-Output in English only.
 Never add extra explanations, apologies, or code fences.
 Always classify correctly and follow the corresponding format strictly.
+VERY IMPORTANT!!! Although the prompt is written in English, Sometimes the text in the file is written by Chinese. Keep all text exactly as shown in the image.
 """
 
         elif typ == 'Test':

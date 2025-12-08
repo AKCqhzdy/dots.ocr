@@ -326,13 +326,13 @@ class DotsOCRParser:
     ):
         pdf_path = str(job_response.get_job_local_files().input_file_path)
         pdf_extractor = PdfExtractor(pdf_path)
-        if not pdf_extractor.is_structured and job_response.use_pipeline:
-            logger.warning(
-                f"PDF {job_response.input_s3_path} is unstructured, "
-                f"but use_pipeline is set to True. "
-                f"Falling back to use_pipeline=False."
-            )
-            job_response.use_pipeline = False
+        # if not pdf_extractor.is_structured and job_response.use_pipeline:
+        #     logger.warning(
+        #         f"PDF {job_response.input_s3_path} is unstructured, "
+        #         f"but use_pipeline is set to True. "
+        #         f"Falling back to use_pipeline=False."
+        #     )
+        #     job_response.use_pipeline = False
         async for task_result, task_status, token_usage in self._schedule_pdf_tasks(
             job_response,
             pdf_extractor

@@ -597,7 +597,7 @@ async def parse_file(
     rebuild_directory: bool = Form(False),
     describe_picture: bool = Form(True),
     overwrite: bool = Form(False),
-    use_pipeline: bool = Form(False)
+    use_pipeline: bool = Form(True)
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
@@ -704,6 +704,9 @@ _health_check_rwlock = RWLock()
 
 
 async def health_check():
+    return JSONResponse(
+        status_code=200, content={"success": "true", "status_code": 200}
+    )
     global _last_health_check_time, _last_health_check_response
     now = datetime.now(UTC)
     async with _health_check_rwlock.reader_lock:

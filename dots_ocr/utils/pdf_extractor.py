@@ -114,6 +114,19 @@ class PdfExtractor:
         
         return " ".join(result_texts)
     
+
+    def check_extractable(self, page_no: int, bbox : list = None):
+        page = self.pdf_document[page_no]
+        clip_rect = None
+        if bbox:
+            x0, y0, x1, y1 = bbox
+            if x1 <= x0 or y1 <= y0:
+                return False
+            clip_rect = fitz.Rect(bbox)
+        words = page.get_text("words", clip=clip_rect)
+        
+        return len(words) > 0
+    
     def extract_text_from_page(self, page_no: int, bbox: list = None, formula_blocks : list = None) -> str:
         if page_no < 0 or page_no >= self.num_pages:
             raise ValueError(f"Page number {page_no} out of range [0, {self.num_pages-1}]")

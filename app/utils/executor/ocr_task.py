@@ -206,6 +206,57 @@ class OcrTask:
             if task.success_usage:
                 self._stats.add_token_usage(*task.success_usage)
             picture_block["text"] = future.result().strip()
+            
+    @traced()
+    async def _describe_pictures_in_blocks(self, blocks_list: list[tuple]):
+        futures: list[asyncio.Future] = []
+        picture_blocks: list[dict] = []
+        try:
+            idx = 0
+            tasks: list[InferenceTask] = []
+            # use_internvl = False
+            # if not categorys:
+            #     categorys = ["Picture"]
+            #     use_internvl = True
+            option = "api" # now all description task use api!!!!!!
+            for (picture_block, cropped_img, category) in blocks_list:
+                future, task = await self._submit_describe_picture_task(
+                    f"{self.job_id}-{self._page_index}-describe-{idx}",
+                    cropped_img,
+                    category,
+                    option,
+                )
+                idx += 1
+                futures.append(future)
+                tasks.append(task)
+                picture_blocks.append(picture_block)
+
+            await asyncio.gather(*futures)
+
+        except Exception as e:
+            logger.error(f"Error submitting picture description inference task: {e}")
+            raise
+
+        for picture_block, future, task in zip(picture_blocks, futures, tasks):
+            if future.cancelled():
+                logger.warning(
+                    "Future for picture description was cancelled for "
+                    f"page {self._page_index} of doc {self._task_model.original_file_uri}",
+                )
+                break
+            if future.exception():
+                raise RuntimeError(
+                    "Failed to get description of picture block(s) for "
+                    f"page {self._page_index} of doc {self._task_model.original_file_uri}"
+                ) from future.exception()
+            # is_fallback only in last attempt it will be set true by_fallback_ocr
+            if task.is_timeout:
+                self._stats.status = "timeout"
+            elif task.is_fallback:
+                self._stats.status = "fallback"
+            if task.success_usage:
+                self._stats.add_token_usage(*task.success_usage)
+            picture_block["text"] = future.result().strip()
 
     def final_success(self):
         self._span.end()
@@ -583,28 +634,45 @@ class PipeOcrTask(OcrTask):
                 return (container_box[0] <= c_x <= container_box[2] and 
                         container_box[1] <= c_y <= container_box[3])
             
+            blocks_list = []
             for info_block in cells["full_layout_info"]:
                 if info_block["category"] in ["Table", "Picture", "Formula", "Inline-Formula", "Chart"]:
                     pass
                 else:
                     block_in_pdf_size = [i / scale_factor for i in info_block["bbox"]]
                     
-                    current_block_formulas = []
-                    if inline_formula_boxes and "full_layout_info" in inline_formula_boxes:
-                        for info_block_f in inline_formula_boxes["full_layout_info"]:
-                            if is_box_in_container(info_block_f["bbox"], info_block["bbox"]):
-                                # assert each inline formula box is within only one text block
-                                if info_block_f['text'].startswith('$$') and info_block_f['text'].endswith('$$'):
-                                    info_block_f['text'] = info_block_f['text'] = info_block_f['text'][1:-1]
-                                block_in_pdf_size_f = [i / scale_factor for i in info_block_f["bbox"]]
-                                info_block_f['bbox'] = block_in_pdf_size_f
-                                current_block_formulas.append(info_block_f)
-                    
-                    info_block["text"] = self._pdf_extractor.extract_text_from_page(
-                        self._page_index,
-                        block_in_pdf_size,
-                        current_block_formulas,
-                    )
+                    if self._pdf_extractor.check_extractable(self._page_index, block_in_pdf_size):
+                        info_block["text"] = self._pdf_extractor.extract_text_from_pdf(
+                            self._page_index,
+                            block_in_pdf_size,
+                        )
+                        current_block_formulas = []
+                        if inline_formula_boxes and "full_layout_info" in inline_formula_boxes:
+                            for info_block_f in inline_formula_boxes["full_layout_info"]:
+                                if is_box_in_container(info_block_f["bbox"], info_block["bbox"]):
+                                    # assert each inline formula box is within only one text block
+                                    if info_block_f['text'].startswith('$$') and info_block_f['text'].endswith('$$'):
+                                        info_block_f['text'] = info_block_f['text'] = info_block_f['text'][1:-1]
+                                    block_in_pdf_size_f = [i / scale_factor for i in info_block_f["bbox"]]
+                                    info_block_f['bbox'] = block_in_pdf_size_f
+                                    current_block_formulas.append(info_block_f)
+                        
+                        info_block["text"] = self._pdf_extractor.extract_text_from_page(
+                            self._page_index,
+                            block_in_pdf_size,
+                            current_block_formulas,
+                        )
+                    else:
+                        x0, y0, x1, y1 = info_block["bbox"]
+                        cropped_img = origin_image.crop((x0, y0, x1, y1))
+                        blocks_list.append( (info_block, cropped_img, "text") )
+            try:
+                await self._describe_pictures_in_blocks(blocks_list)
+            except Exception as e:
+                logger.error(
+                    f"It's detected that in page {self._page_index} some texts is scanned. Error while extracting: {e}"
+                )
+                raise
             logger.debug(f"Extracted text results: {cells}")
 
             # rebuild directory structure by toc
