@@ -146,7 +146,7 @@ class InferenceTask:
     @traced()
     async def inference_with_vllm(self, prompt=None):
         if self._client is None:
-            api_key = None
+            api_key = "EMPTY" # IMPORTANT: vLLM server requires an api_key which cann't be None or "", even though it does not validate it.
             if isinstance(self._options, ApiInferenceTaskOptions):
                 if self._options.api_key:
                     api_key = self._options.api_key
