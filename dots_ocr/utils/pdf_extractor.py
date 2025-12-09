@@ -178,8 +178,8 @@ class PdfExtractor:
         
         for lvl, title, page, detail in raw_toc:
             page -= 1
-            if detail.get("to") in [None, ""]: # skip invalid entries
-                to_cor = None
+            if detail.get("to") in [None, ""]:
+                to_cor = [0,0] # just put a dummy value
             else:
                 to_cor = list(detail.get("to", []))
                 height = self.page_size(page)[1]
