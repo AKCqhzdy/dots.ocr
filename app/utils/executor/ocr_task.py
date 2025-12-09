@@ -150,7 +150,7 @@ class OcrTask:
 
     def iter_picture_blocks(self, cells: dict, origin_image: Image.Image, categorys: list[str] = ["Picture"]):
         for info_block in cells["full_layout_info"]:
-            if info_block["category"] in categorys:
+            if info_block["category"] in categorys or "all" in categorys:
                 x0, y0, x1, y1 = info_block["bbox"]
                 cropped_img = origin_image.crop((x0, y0, x1, y1))
                 yield info_block, cropped_img, info_block["category"]
@@ -389,7 +389,7 @@ class PdfOcrTask(OcrTask):
 
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image=image, categorys=None)
+                await self._describe_pictures_in_page(cells, origin_image=image)
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in page {self._page_index}: {e}"
@@ -463,7 +463,7 @@ class ImageOcrTask(OcrTask):
 
         if self.describe_picture:
             try:
-                await self._describe_pictures_in_page(cells, origin_image=image, categorys=None)
+                await self._describe_pictures_in_page(cells, origin_image=image)
             except Exception as e:
                 logger.error(
                     f"Error describing pictures in image {self._task_model.original_file_uri}: {e}"
@@ -534,15 +534,6 @@ class PipeOcrTask(OcrTask):
         )
         await self._layout_reader_pool.add_task(task)
         return await task.get_completion_future(), task
-
-
-    @traced()
-    async def _layout_reader(self, blocks, width, height):
-        async with self._parser.semaphore_reader:
-            bboxes = [info_block["bbox"] for info_block in blocks]
-            order = await sort_bboxes(bboxes, width, height)
-            sorted_blocks = [blocks[i] for i in order]
-            blocks[:] = sorted_blocks
         
     @traced()
     async def _upload_results(self, result: dict):
@@ -642,7 +633,7 @@ class PipeOcrTask(OcrTask):
                     block_in_pdf_size = [i / scale_factor for i in info_block["bbox"]]
                     
                     if self._pdf_extractor.check_extractable(self._page_index, block_in_pdf_size):
-                        info_block["text"] = self._pdf_extractor.extract_text_from_pdf(
+                        info_block["text"] = self._pdf_extractor.extract_text_from_page(
                             self._page_index,
                             block_in_pdf_size,
                         )
@@ -739,3 +730,134 @@ class PipeOcrTask(OcrTask):
             raise
 
         return await self._upload_results(cells)
+
+class ImagePipeOcrTask(OcrTask):
+    """A CPU-bound task."""
+
+    def __init__(
+        self,
+        input_path: str,
+        layout_detection_pool: BatchTaskExecutorPool,
+        layout_reader_pool: TaskExecutorPool,
+        bbox: tuple = None,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self._input_path = input_path
+        self._bbox = bbox
+        self._layout_detection_pool = layout_detection_pool
+        self._layout_reader_pool = layout_reader_pool
+
+    @traced()
+    async def _submit_layout_detection_task(self, task_id, image):
+        task = OfflineBatchInferenceTask(
+            span=start_child_span("OfflineBatchInferenceTask", None),
+            task_id=task_id,
+            image=image,
+        )
+        await self._layout_detection_pool.add_task(task)
+        return await task.get_completion_future(), task
+    
+    @traced()
+    async def _submit_layout_reader_task(self, task_id, blocks, width, height):
+        task = OfflineLayoutReaderInferenceTask(
+            span=start_child_span("OfflineLayoutReaderInferenceTask", None),
+            task_id=task_id,
+            blocks=blocks,
+            width=width,
+            height=height,
+        )
+        await self._layout_reader_pool.add_task(task)
+        return await task.get_completion_future(), task
+
+    @traced()
+    async def _run(self):
+        """
+        Returns:
+            dict: keys are "md", "md_nohf", "json", "page_no"
+        """
+        origin_image, image, prompt, scale_factor = (
+            await self._parser.prepare_image_for_ocr(
+                self._input_path,
+                self.prompt_mode,
+                self._task_model.job_response.fitz_preprocess,
+                self._bbox,
+            )
+        )
+
+        # layout detection
+        try:
+            detection_future, detection_task = await self._submit_layout_detection_task(
+                f"{self.job_id}-{self._page_index}-layout-detection",
+                image
+            )
+        except Exception as e:
+            if detection_task.is_timeout:
+                self._stats.status = "timeout"
+            logger.error(f"Error submitting layout detection task: {e}")
+            raise
+        try:
+            cells, inline_formula_boxes = detection_future
+
+        except Exception as e:
+            logger.error(f"Error while detecting layout: {e}")
+            raise
+        logger.debug(f"detected layout info successfully: {cells}")
+
+        try:
+            cells = await self._process_ocr_results(
+                cells['full_layout_info'], origin_image, image, scale_factor
+            )
+        except Exception as e:
+            logger.error(f"Error post-processing ocr results: {e}")
+            raise
+        logger.debug(f"post-processed ocr results successfully")
+        
+        # layout reader to sort blocks
+        try:
+            reader_future, reader_task = await self._submit_layout_reader_task(
+                f"{self.job_id}-{self._page_index}-layout-reader",
+                cells["full_layout_info"],
+                cells['width'],
+                cells['height']
+            )
+        except Exception as e:
+            if reader_task.is_timeout:
+                self._stats.status = "timeout"
+            logger.error(f"Error while sorting blocks: {e}")
+            raise
+
+        try:
+            cells['full_layout_info'] = reader_future
+        except Exception as e:
+            logger.error(f"Error getting OCR inference result: {e}")
+            raise
+        logger.debug(f"sorted blocks successfully: {cells}")
+
+        if self.describe_picture:
+            try:
+                await self._describe_pictures_in_page(cells, origin_image=image, categorys=["all"])
+            except Exception as e:
+                logger.error(
+                    f"Error describing pictures in image {self._task_model.original_file_uri}: {e}"
+                )
+                raise
+
+            try:
+                cells = await self._parser.save_results(
+                    cells,
+                    self._task_model.local_save_dir,
+                    self._task_model.output_file_name,
+                    origin_image,
+                    1,
+                )
+                logger.debug(
+                    f"Saved results for image {self._task_model.original_file_uri}: {cells}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error saving results for image {self._task_model.original_file_uri}: {e}"
+                )
+                raise
+
+        return cells

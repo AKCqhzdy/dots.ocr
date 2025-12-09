@@ -207,7 +207,10 @@ def post_process_output(
     response, prompt_mode, origin_image, input_image, min_pixels=None, max_pixels=None, toc=[]
 ):
     try:
-        cells = json.loads(response)
+        if isinstance(response, list):
+            cells = response
+        else:
+            cells = json.loads(response)
         json_load_failed = False
     except Exception as e:
         print(f"cells post process error: {e}, when using {prompt_mode}")

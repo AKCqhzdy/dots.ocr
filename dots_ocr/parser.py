@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 
 from app.utils.executor.job_executor_pool import JobResponseModel
-from app.utils.executor.ocr_task import OcrTaskModel, ImageOcrTask, PdfOcrTask, PipeOcrTask
+from app.utils.executor.ocr_task import OcrTaskModel, ImageOcrTask, PdfOcrTask, PipeOcrTask, ImagePipeOcrTask
 from app.utils.executor.task_executor_pool import TaskExecutorPool, BatchTaskExecutorPool
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, traced
@@ -58,15 +58,30 @@ class DotsOCRParser:
             task_id=str(0),
             output_file_name=job_files.output_file_name,
         )
-        task = ImageOcrTask(
-            span=get_tracer().start_span(f"ImageOcrTask {job_response.job_id}"),
-            input_path=str(job_files.input_file_path),
-            bbox=bbox,
-            task_model=task_model,
-            parser=self.parser,
-            ocr_inference_pool=self._ocr_task_executor_pool,
-            describe_picture_pool=self._describe_picture_task_executor_pool,
-        )
+        
+        if job_response.use_pipeline:
+            task = ImagePipeOcrTask(
+                span=get_tracer().start_span(f"ImageOcrTask {job_response.job_id}"),
+                input_path=str(job_files.input_file_path),
+                bbox=bbox,
+                task_model=task_model,
+                parser=self.parser,
+                ocr_inference_pool=self._ocr_task_executor_pool,
+                describe_picture_pool=self._describe_picture_task_executor_pool,
+                layout_detection_pool=self._layout_detection_task_executor_pool,
+                layout_reader_pool=self._layout_reader_task_executor_pool,
+            )
+        else:
+            task = ImageOcrTask(
+                span=get_tracer().start_span(f"ImageOcrTask {job_response.job_id}"),
+                input_path=str(job_files.input_file_path),
+                bbox=bbox,
+                task_model=task_model,
+                parser=self.parser,
+                ocr_inference_pool=self._ocr_task_executor_pool,
+                describe_picture_pool=self._describe_picture_task_executor_pool,
+            )
+
         task_result, _ = await asyncio.create_task(self._concurrent_run(task))
         retry_run = self.parser.page_retry_number
         while task_result is None and retry_run > 0:
