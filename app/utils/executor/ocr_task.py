@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from pathlib import Path
 
@@ -206,6 +207,11 @@ class OcrTask:
             if task.success_usage:
                 self._stats.add_token_usage(*task.success_usage)
             picture_block["text"] = future.result().strip()
+            # remove Type: xxx info from description when use qwen api
+            pattern = re.compile(
+                r'^[ \t]*(\*\*)?[Tt]ype\s*:[^\n]*(\*\*)?[ \t]*(?:\r?\n){1,3}',
+            )
+            picture_block["text"] = pattern.sub('', picture_block["text"]).strip()
             
     @traced()
     async def _describe_pictures_in_blocks(self, blocks_list: list[tuple]):
@@ -257,6 +263,11 @@ class OcrTask:
             if task.success_usage:
                 self._stats.add_token_usage(*task.success_usage)
             picture_block["text"] = future.result().strip()
+            # remove Type: xxx info from description when use qwen 
+            pattern = re.compile(
+                r'^[ \t]*(\*\*)?[Tt]ype\s*:[^\n]*(\*\*)?[ \t]*(?:\r?\n){1,3}',
+            )
+            picture_block["text"] = pattern.sub('', picture_block["text"]).strip()
 
     def final_success(self):
         self._span.end()
@@ -709,6 +720,9 @@ class PipeOcrTask(OcrTask):
                     f"Error describing pictures in page {self._page_index}: {e}"
                 )
                 raise
+        
+        # post-process and save results
+
 
         try:
             cells = await self._parser.save_results(
