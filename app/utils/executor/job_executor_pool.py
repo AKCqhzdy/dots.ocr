@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+import os
 from typing import Awaitable, Callable, Dict, List, Literal, Optional
 
 from loguru import logger
@@ -32,22 +33,18 @@ class JobLocalFiles(BaseModel):
 
     @property
     def output_json_path(self):
-        output_file_path = self.output_dir_path / self.output_file_name
-        return output_file_path.with_suffix(".json")
+        return self.output_dir_path / f"{self.output_file_name}.json"
 
     @property
     def output_md_path(self):
-        output_file_path = self.output_dir_path / self.output_file_name
-        return output_file_path.with_suffix(".md")
-
+        return self.output_dir_path / f"{self.output_file_name}.md"
     @property
     def output_md_nohf_path(self):
         return self.output_dir_path / f"{self.output_file_name}_nohf.md"
 
     @property
     def output_md5_path(self):
-        output_file_path = self.output_dir_path / self.output_file_name
-        return output_file_path.with_suffix(".md5")
+        return self.output_dir_path / f"{self.output_file_name}.md5"
 
 
 class JobTaskStats(BaseModel):
@@ -94,6 +91,9 @@ class JobResponseModel(BaseModel):
                 self.output_s3_path, self.is_s3
             )
             output_file_name = self.output_s3_path.rstrip("/").rsplit("/", 1)[-1]
+            name, ext = os.path.splitext(output_file_name)
+            if ext.lower() in ['.pdf', '.png', '.jpg', '.jpeg']:
+                output_file_name = name
             self._job_local_files = JobLocalFiles(
                 remote_input_bucket=input_bucket,
                 remote_input_file_key=input_file_key,
