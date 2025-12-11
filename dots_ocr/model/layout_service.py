@@ -28,7 +28,6 @@ class LayoutDetectionService():
         Both single and batch results return a list.
         """
 
-        # TODO(zihao): merge figure_title to figure, table_title to table, etc.
         def align_category(label: str) -> str:
             """
             dots_ocr supported categories:
@@ -42,11 +41,10 @@ class LayoutDetectionService():
             document title, section header, text, vertical text, page number, abstract, table of contents, references, footnote, image caption, 
             header, footer, header image, footer image, algorithm, inline formula, display formula, formula number, image, table, figure title
              (figure title, table title, chart title), seal, chart, aside text, and reference content.
-
-            However, the actual output labels are different from the above names. Here only modify the categories which affect processing.
             """
 
-            mapping = {
+            # now contain all categories from PP-DocLayoutV2
+            mapping = mapping = {
                 'doc_title': 'Title',
                 'paragraph_title': 'Section-header',
                 'text': 'Text',
@@ -54,16 +52,34 @@ class LayoutDetectionService():
                 'page_number': 'Text',
                 'header': 'Page-header',
                 'footer': 'Page-footer',
+
                 'formula': 'Formula',
                 'display_formula': 'Formula',
-                'inline_formula': 'Inline-Formula',
+                'inline_formula': 'Inline-Formula', # will embed into Text box later
                 'formula_number': 'Text',
+
                 'image': 'Picture',
-                'header-image': 'Picture',
-                'footer-image': 'Picture',
+                'header_image': 'Picture',
+                'footer_image': 'Picture',
+                'seal': 'Picture',
+
                 'table': 'Table',
-                'figure': 'Figure',
-                'chart': 'Chart',
+
+                'figure': 'Picture', 
+                'figure_title': 'Caption',
+                'chart': 'Picture',
+
+                'abstract': 'Text',
+                'algorithm': 'Text',
+                'aside_text': 'Text',
+                'footnote': 'Footnote',
+                'vision_footnote': 'Footnote',
+
+                'reference': 'Text',
+                'reference_content': 'Text',
+
+                'content': 'Text',
+                'vertical_text': 'Text',
             }
             return mapping.get(label, label)
         
