@@ -105,6 +105,13 @@ class LayoutDetectionService():
                 }
                 for bbox in item.get('boxes', [])
             ]
+            if not item.get('boxes'):
+                logger.warning(f"No boxes detected on page {item.get('page_index')}. Return whole image as a single box.")
+                transformed_boxes = [{
+                    'category': 'Picture',
+                    'bbox': [0, 0, item.img['res'].size[0], item.img['res'].size[1]]
+                }]
+                
             inline_formula_boxes = remove_contained_boxes(transformed_boxes)
             img = (item.img)['res'] # PP-DocLayout_plus-L will resize the image if parse pdf. It seems is dpi=200 but I don't find relative doc.
             width, height = img.size
@@ -118,7 +125,7 @@ class LayoutDetectionService():
                 'width': width,
                 'height': height,
                 'full_layout_info': inline_formula_boxes
-            } 
+            } if inline_formula_boxes else None
         
         if isinstance(result, list):
             transformed_results = []
