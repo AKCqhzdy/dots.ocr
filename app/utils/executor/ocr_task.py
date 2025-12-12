@@ -653,8 +653,16 @@ class PipeOcrTask(OcrTask):
                             for info_block_f in inline_formula_boxes["full_layout_info"]:
                                 if is_box_in_container(info_block_f["bbox"], info_block["bbox"]):
                                     # assert each inline formula box is within only one text block
-                                    if info_block_f['text'].startswith('$$') and info_block_f['text'].endswith('$$'):
-                                        info_block_f['text'] = info_block_f['text'] = info_block_f['text'][1:-1]
+                                    text = info_block_f['text']
+                                    if text.startswith('$$') and text.endswith('$$'):
+                                        text = text[2:-2]
+                                        if '$$' in text:
+                                            info_block_f['text'] = '\n' + info_block_f['text'] + '\n'
+                                        else:
+                                            if '\n' in text:
+                                                text = text.strip('\n')
+                                                info_block_f['text'] = text
+                                            info_block_f['text'] = '$' + text + '$'
                                     block_in_pdf_size_f = [i / scale_factor for i in info_block_f["bbox"]]
                                     info_block_f['bbox'] = block_in_pdf_size_f
                                     current_block_formulas.append(info_block_f)
