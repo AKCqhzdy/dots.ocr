@@ -102,7 +102,7 @@ class Configs(BaseSettings):
     # If the number of failed tasks is greater than this threshold, the job will be considered failed.
     TASK_FAIL_THRESHOLD: float = 0.1
 
-    LOG_LEVEL: str = "DEBUG"
+    LOG_LEVEL: str = "INFO"
 
     DOTSOCR_OTEL_SERVICE_NAME: str = "dots.ocr"
     # Endpoint URL for trace data only, with an optionally-specified port number.
@@ -117,7 +117,7 @@ class Configs(BaseSettings):
     OTEL_ENABLE_METRICS: bool = False
 
     # Whether to delete local result files after each job is completed.
-    CLEANUP_LOCAL: bool = False
+    CLEANUP_LOCAL: bool = True
 
     # Open it for pipeline parsing prepare
     PARSE_WITH_PIPELINE: bool = True
