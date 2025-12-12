@@ -1,1 +1,0 @@
-uv run --env-file .env uvicorn app.dotsocr_service:app --host=0.0.0.0 --port=6008
