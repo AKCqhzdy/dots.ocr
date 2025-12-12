@@ -40,7 +40,7 @@ from app.utils.metrics import setup_metrics
 from app.utils.pg_vector import OCRTable, PGVector
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, setup_tracing, trace_span_async, traced
-from dots_ocr.model.inference import InferenceTaskOptions
+from dots_ocr.model.inference import InferenceTaskOptions, ApiInferenceTaskOptions
 from dots_ocr.model.layout_service import get_layout_detection_service, get_layout_reader_service, get_layout_image
 from dots_ocr.parser import DotsOCRParser
 from dots_ocr.utils.consts import MAX_PIXELS, MIN_PIXELS
@@ -89,7 +89,7 @@ if configs.PARSE_WITH_PIPELINE:
 
 page_parser = PageParser(
     ocr_inference_task_options=InferenceTaskOptions(
-        model_name="dotsocr",
+        model_name=configs.OCR_INFERENCE_NAME,
         model_host=configs.OCR_INFERENCE_HOST,
         model_port=configs.OCR_INFERENCE_PORT,
         temperature=0.1,
@@ -97,14 +97,35 @@ page_parser = PageParser(
         max_completion_tokens=32768,
         timeout=configs.API_TIMEOUT,
     ),
-    describe_picture_task_options=InferenceTaskOptions(
-        model_name="InternVL3_5-2B",
+    describe_picture_task_options_internvl=InferenceTaskOptions(
+        model_name=configs.INTERN_VL_NAME,
         model_host=configs.INTERN_VL_HOST,
         model_port=configs.INTERN_VL_PORT,
         temperature=0.1,
         top_p=1.0,
         max_completion_tokens=8192,
         timeout=configs.API_TIMEOUT,
+    ),
+    describe_picture_task_options_paddleocr=InferenceTaskOptions(
+        model_name=configs.PADDLEOCR_VL_NAME,
+        model_host=configs.PADDLEOCR_VL_HOST,
+        model_port=configs.PADDLEOCR_VL_PORT,
+        temperature=0.1,
+        top_p=1.0,
+        max_completion_tokens=8192,
+        timeout=configs.API_TIMEOUT,
+    ),
+    describe_picture_task_options_api = ApiInferenceTaskOptions(
+        model_name=configs.API_MODEL_NAME,
+        model_host="None", # modify the definition of inference task options later
+        model_port=0, # modify the definition of inference task options later
+        api_base_url=configs.API_BASE_URL,
+        api_key=configs.API_KEY,
+        temperature=0.1,
+        top_p=1.0,
+        max_completion_tokens=32768,
+        timeout=configs.API_TIMEOUT,
+        max_attempts=3,
     ),
     parse_options=ParseOptions(
         dpi=configs.DPI,
@@ -399,7 +420,7 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 result,
                                 status,
                                 token_usage,
-                            ) in dots_parser.schedule_pdf_tasks(job_response, configs.PARSE_WITH_PIPELINE):
+                            ) in dots_parser.schedule_pdf_tasks(job_response):
                                 sum_token_usage(total_token_usage, token_usage)
                                 if status in ["fallback", "timeout", "failed"]:
                                     # TODO(tatiana): save failed/fallback task to OCRTable and
@@ -576,6 +597,7 @@ async def parse_file(
     rebuild_directory: bool = Form(False),
     describe_picture: bool = Form(True),
     overwrite: bool = Form(False),
+    use_pipeline: bool = Form(True)
 ):
     try:
         file_ext = Path(input_s3_path).suffix.lower()
@@ -639,6 +661,7 @@ async def parse_file(
         rebuild_directory=rebuild_directory,
         describe_picture=describe_picture,
         overwrite=overwrite,
+        use_pipeline=use_pipeline,
     )
 
     logger.info(f"Job {ocr_job_id} created. {job_response}")
@@ -681,6 +704,9 @@ _health_check_rwlock = RWLock()
 
 
 async def health_check():
+    return JSONResponse(
+        status_code=200, content={"success": "true", "status_code": 200}
+    )
     global _last_health_check_time, _last_health_check_response
     now = datetime.now(UTC)
     async with _health_check_rwlock.reader_lock:

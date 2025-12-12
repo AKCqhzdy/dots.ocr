@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 
 from app.utils.executor.job_executor_pool import JobResponseModel
-from app.utils.executor.ocr_task import OcrTaskModel, ImageOcrTask, PdfOcrTask, PipeOcrTask
+from app.utils.executor.ocr_task import OcrTaskModel, ImageOcrTask, PdfOcrTask, PipeOcrTask, ImagePipeOcrTask
 from app.utils.executor.task_executor_pool import TaskExecutorPool, BatchTaskExecutorPool
 from app.utils.storage import StorageManager
 from app.utils.tracing import get_tracer, traced
@@ -58,15 +58,30 @@ class DotsOCRParser:
             task_id=str(0),
             output_file_name=job_files.output_file_name,
         )
-        task = ImageOcrTask(
-            span=get_tracer().start_span(f"ImageOcrTask {job_response.job_id}"),
-            input_path=str(job_files.input_file_path),
-            bbox=bbox,
-            task_model=task_model,
-            parser=self.parser,
-            ocr_inference_pool=self._ocr_task_executor_pool,
-            describe_picture_pool=self._describe_picture_task_executor_pool,
-        )
+        
+        if job_response.use_pipeline:
+            task = ImagePipeOcrTask(
+                span=get_tracer().start_span(f"ImageOcrTask {job_response.job_id}"),
+                input_path=str(job_files.input_file_path),
+                bbox=bbox,
+                task_model=task_model,
+                parser=self.parser,
+                ocr_inference_pool=self._ocr_task_executor_pool,
+                describe_picture_pool=self._describe_picture_task_executor_pool,
+                layout_detection_pool=self._layout_detection_task_executor_pool,
+                layout_reader_pool=self._layout_reader_task_executor_pool,
+            )
+        else:
+            task = ImageOcrTask(
+                span=get_tracer().start_span(f"ImageOcrTask {job_response.job_id}"),
+                input_path=str(job_files.input_file_path),
+                bbox=bbox,
+                task_model=task_model,
+                parser=self.parser,
+                ocr_inference_pool=self._ocr_task_executor_pool,
+                describe_picture_pool=self._describe_picture_task_executor_pool,
+            )
+
         task_result, _ = await asyncio.create_task(self._concurrent_run(task))
         retry_run = self.parser.page_retry_number
         while task_result is None and retry_run > 0:
@@ -182,7 +197,6 @@ class DotsOCRParser:
         self,
         job_response: JobResponseModel,
         pdf_extractor: PdfExtractor,
-        parse_with_pipeline: bool = False,
     ):
         toc = pdf_extractor.get_clean_toc()
         job_files = job_response.get_job_local_files()
@@ -210,9 +224,9 @@ class DotsOCRParser:
                 if len(toc) > 0:
                     page_toc = toc[page_index] if page_index in toc else []
                 else:
-                    page_toc = None
+                    page_toc = []
                 
-                if parse_with_pipeline:
+                if job_response.use_pipeline:
                     task = PipeOcrTask(
                         page=doc[page_index],
                         span=get_tracer().start_span(
@@ -324,13 +338,18 @@ class DotsOCRParser:
     async def schedule_pdf_tasks(
         self,
         job_response: JobResponseModel,
-        parse_with_pipeline: bool = False,
     ):
         pdf_path = str(job_response.get_job_local_files().input_file_path)
         pdf_extractor = PdfExtractor(pdf_path)
+        # if not pdf_extractor.is_structured and job_response.use_pipeline:
+        #     logger.warning(
+        #         f"PDF {job_response.input_s3_path} is unstructured, "
+        #         f"but use_pipeline is set to True. "
+        #         f"Falling back to use_pipeline=False."
+        #     )
+        #     job_response.use_pipeline = False
         async for task_result, task_status, token_usage in self._schedule_pdf_tasks(
             job_response,
-            pdf_extractor,
-            parse_with_pipeline = parse_with_pipeline if pdf_extractor.is_structured else False,
+            pdf_extractor
         ):
             yield task_result, task_status, token_usage

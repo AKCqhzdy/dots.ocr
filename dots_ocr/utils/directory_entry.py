@@ -103,11 +103,17 @@ class SectionHeader:
             cleaned = re.sub(r'^[\d\.\s]+', '', text)
             cleaned = cleaned.strip(' .\t\n')
             return cleaned
-        ratio = fuzz.ratio(remove_prefix_number(self.clean_text), entry['text'])
+        self_text = remove_prefix_number(self.clean_text).lower()
+        entry_text = remove_prefix_number(entry['text']).lower()
+        ratio = fuzz.ratio(self_text, entry_text)
         if ratio < 40:
             return float('inf')
 
         # Calculate the distance from a point to the bbox
+        if 'to' not in entry:
+            return 0
+        if abs(entry['to'][0]) < 0.1 or abs(entry['to'][1]) < 0.1:
+            return 1 / ratio
         x = entry['to'][0]
         y = entry['to'][1]
         x1, y1, x2, y2 = self.bbox

@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import List, Optional
+import os
 
 from pydantic_settings import BaseSettings
 
@@ -21,12 +22,12 @@ class Configs(BaseSettings):
     # The max number of concurrent picture description requests that can be sent to the layout
     # detection model (PP-DocLayout_plus-L). Increasing this may improve CPU utilization and
     # increase the speed to some extent but at the cost of the model server memory usage.
-    CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT: int = 2
+    CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT: int = 8
 
     # The max number of concurrent picture description requests that can be sent to the layout
     # reader model. Increasing this may improve CPU utilization and increase the speed to some
     # extent but at the cost of the model server memory usage.
-    CONCURRENT_LAYOUT_READER_TASK_LIMIT: int = 2
+    CONCURRENT_LAYOUT_READER_TASK_LIMIT: int = 8
 
     # The max number of concurrent OCR tasks that can be run. Increasing this may improve overall
     # resource overlapping, but at the cost of memory for buffering the extracted images from docs,
@@ -56,18 +57,41 @@ class Configs(BaseSettings):
 
     # The number of layout reader tasks that can be queued. Increase this may improve resource
     # overlapping, but at the cost of memory for buffering all blocks identified from the documents.
-    LAYOUT_READER_TASK_QUEUE_MAX_SIZE: int = 4
+    LAYOUT_READER_TASK_QUEUE_MAX_SIZE: int = (
+        2 * CONCURRENT_LAYOUT_READER_TASK_LIMIT
+    )
 
     LAYOUT_DETECTION_BATCH_COLLECT_WINDOW: float = 0.2  # seconds
 
+
+    # ## local
+    # OCR_INFERENCE_HOST: str = "localhost"
+    # OCR_INFERENCE_PORT: int = 18000
+    # INTERN_VL_HOST: str = "localhost"
+    # INTERN_VL_PORT: int = 18001
+    # PADDLEOCR_VL_HOST: str = "localhost"
+    # PADDLEOCR_VL_PORT: int = 18001
+    # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: Optional[str] = "http://localhost:4317"
+
+    OCR_INFERENCE_NAME: str = "dotsocr"
     OCR_INFERENCE_HOST: str = "localhost"
     OCR_INFERENCE_PORT: int = 8000
     OCR_HEALTH_CHECK_URL: str = (
         f"http://{OCR_INFERENCE_HOST}:{OCR_INFERENCE_PORT}/health"
     )
 
+    INTERN_VL_NAME: str = "InternVL3_5-2B"
     INTERN_VL_HOST: str = "internvl3-5"
     INTERN_VL_PORT: int = 8000
+
+    PADDLEOCR_VL_NAME: str = "PaddleOCR-VL"
+    PADDLEOCR_VL_HOST: str = "paddleocr"
+    PADDLEOCR_VL_PORT: int = 8000 # havn't use now
+
+    API_KEY: str = os.environ.get("API_KEY", "sk-xxxxxxxxxx")
+    API_BASE_URL: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    API_MODEL_NAME: str = "qwen-vl-plus"
+
 
     # TODO(tatiana): need to check the timeout semantics in OpenAI API.
     # Exclude queuing time from the timeout.
@@ -95,8 +119,8 @@ class Configs(BaseSettings):
     # Whether to delete local result files after each job is completed.
     CLEANUP_LOCAL: bool = True
 
-    # Whether to parse the document with the pipeline.
-    PARSE_WITH_PIPELINE: bool = False
+    # Open it for pipeline parsing prepare
+    PARSE_WITH_PIPELINE: bool = True
 
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent

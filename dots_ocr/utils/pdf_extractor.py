@@ -49,17 +49,92 @@ class PdfExtractor:
     ) -> str:
         if bbox:
             rect = fitz.Rect(bbox)
-            text = page.get_text("text", clip=rect)
+            text = page.get_text("text", clip=rect, flags=0)
         else:
             text = page.get_text("text")
         text = re.sub(r"(?<!\n)\n(?!\n)", " ", text) 
         return text.strip()
+
+    @staticmethod
+    def extract_text_with_formulas(
+        page: fitz.Page,
+        bbox: list = None,
+        formula_blocks: list = None
+    ) -> str:
+        
+        clip_rect = fitz.Rect(bbox)
+        words = page.get_text("words", clip=clip_rect)
+        
+        formula_rects = [fitz.Rect(block["bbox"]) for block in formula_blocks]
+        
+        def is_in_formula(word_rect_tuple):
+            word_rect = fitz.Rect(word_rect_tuple)
+            for frm_rect in formula_rects:
+                if not (word_rect & frm_rect).is_empty:
+                    inter_area = (word_rect & frm_rect).get_area()
+                    if inter_area / word_rect.get_area() > 0.3:
+                        return True
+            return False
+        
+        items = []
+        for word in words:
+            x0, y0, x1, y1, text, *_ = word
+            word_rect = (x0, y0, x1, y1)
+            if not is_in_formula(word_rect):
+                items.append({
+                    "text": text,
+                    "y0": y0,
+                    "x0": x0,
+                })
+        for block in formula_blocks:
+            x0, y0, x1, y1 = block["bbox"]
+            items.append({
+                "text": block["text"],
+                "y0": y0,
+                "x0": x0,
+            })
+        
+        Y_TOLERANCE = 3
+        items.sort(key=lambda it: it["y0"])
+        rows = []
+        current_row = [items[0]]
+        for item in items[1:]:
+            prev = current_row[-1]
+            if abs(item["y0"] - prev["y0"]) <= Y_TOLERANCE:
+                current_row.append(item)
+            else:
+                rows.append(current_row)
+                current_row = [item]
+        rows.append(current_row)
+        
+        result_texts = []
+        for row in rows:
+            row.sort(key=lambda it: it["x0"])
+            result_texts.extend([it["text"] for it in row])
+        
+        return " ".join(result_texts)
     
-    def extract_text_from_page(self, page_no: int, bbox: list = None) -> str:
+
+    def check_extractable(self, page_no: int, bbox : list = None):
+        page = self.pdf_document[page_no]
+        clip_rect = None
+        if bbox:
+            x0, y0, x1, y1 = bbox
+            if x1 <= x0 or y1 <= y0:
+                return False
+            clip_rect = fitz.Rect(bbox)
+        words = page.get_text("words", clip=clip_rect)
+        
+        return len(words) > 0
+    
+    def extract_text_from_page(self, page_no: int, bbox: list = None, formula_blocks : list = None) -> str:
         if page_no < 0 or page_no >= self.num_pages:
             raise ValueError(f"Page number {page_no} out of range [0, {self.num_pages-1}]")
         page = self.pdf_document[page_no]
-        return self.extract_text(page, bbox)
+        if formula_blocks is None or formula_blocks == []:
+            return self.extract_text(page, bbox)
+        else:
+            return self.extract_text_with_formulas(page, bbox, formula_blocks)
 
     def page_to_image(self, page_no: int, dpi: int = 72) -> Image.Image:
         if page_no < 0 or page_no >= self.num_pages:
@@ -103,11 +178,12 @@ class PdfExtractor:
         
         for lvl, title, page, detail in raw_toc:
             page -= 1
-            assert detail.get("to") not in [None, ""], \
-                f"TOC entry destination not found for title: {title}"
-            to_cor = list(detail.get("to", []))
-            height = self.page_size(page)[1]
-            to_cor[1] = height - to_cor[1]  # Convert PDF coordinate to top-left origin coordinate
+            if detail.get("to") in [None, ""]:
+                to_cor = [0,0] # just put a dummy value
+            else:
+                to_cor = list(detail.get("to", []))
+                height = self.page_size(page)[1]
+                to_cor[1] = height - to_cor[1]  # Convert PDF coordinate to top-left origin coordinate
             entry = {
                 "level": lvl,
                 "text": title,

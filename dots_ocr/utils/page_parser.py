@@ -6,6 +6,7 @@ from typing import Literal
 
 from fitz import Page
 from PIL import Image
+from loguru import logger
 from pydantic import BaseModel
 
 from app.utils.tracing import start_child_span, traced
@@ -43,7 +44,9 @@ class PageParser:
     def __init__(
         self,
         ocr_inference_task_options: InferenceTaskOptions = None,
-        describe_picture_task_options: InferenceTaskOptions = None,
+        describe_picture_task_options_internvl: InferenceTaskOptions = None,
+        describe_picture_task_options_paddleocr: InferenceTaskOptions = None,
+        describe_picture_task_options_api: InferenceTaskOptions = None,
         parse_options: ParseOptions = None,
         concurrency_limit=8,
     ):
@@ -58,7 +61,9 @@ class PageParser:
             self._image_options = ParseOptions()
 
         self._ocr_inference_task_options = ocr_inference_task_options
-        self._describe_picture_task_options = describe_picture_task_options
+        self._describe_picture_task_options_internvl = describe_picture_task_options_internvl
+        self._describe_picture_task_options_paddleocr = describe_picture_task_options_paddleocr
+        self._describe_picture_task_options_api = describe_picture_task_options_api
         if self._ocr_inference_task_options is None:
             self._ocr_inference_task_options = InferenceTaskOptions(
                 model_name="dotsocr",
@@ -69,17 +74,29 @@ class PageParser:
                 max_completion_tokens=32768,
                 timeout=10,
             )
-        if self._describe_picture_task_options is None:
-            self._describe_picture_task_options = InferenceTaskOptions(
+        if self._describe_picture_task_options_internvl is None:
+            self._describe_picture_task_options_internvl = InferenceTaskOptions(
                 model_name="InternVL3_5-2B",
-                model_host="internvl3-5",
-                model_port=6008,
+                model_host="internvl",
+                model_port=8000,
                 temperature=0.1,
                 top_p=1.0,
                 max_completion_tokens=8192,
                 timeout=10,
             )
-
+        if self._describe_picture_task_options_paddleocr is None:
+            self._describe_picture_task_options_paddleocr = InferenceTaskOptions(
+                model_name="PaddleOCR-VL",
+                model_host="paddleocr",
+                model_port=8000,
+                temperature=0.1,
+                top_p=1.0,
+                max_completion_tokens=8192,
+                timeout=10,
+            )
+        if self._describe_picture_task_options_api is None:
+            logger.warning("api based describe picture task options is not provided. If use api based describe picture, it will raise error.")
+            
         self.concurrency_limit = concurrency_limit
         self.semaphore = asyncio.Semaphore(self.concurrency_limit)
         self.semaphore_reader = asyncio.Semaphore(self.concurrency_limit)  # TODO(zihao) can larger. need meansure later
@@ -94,8 +111,14 @@ class PageParser:
         return self._ocr_inference_task_options
 
     @property
-    def describe_picture_task_options(self):
-        return self._describe_picture_task_options
+    def describe_picture_task_options_internvl(self):
+        return self._describe_picture_task_options_internvl
+    @property
+    def describe_picture_task_options_paddleocr(self):
+        return self._describe_picture_task_options_paddleocr
+    @property
+    def describe_picture_task_options_api(self):
+        return self._describe_picture_task_options_api
 
     @property
     def dpi(self):
@@ -109,17 +132,76 @@ class PageParser:
     def max_pixels(self):
         return self._image_options.max_pixels
 
-    @property
-    def picture_description_prompt(self) -> str:
-        return (
-            "Extract the information from this image objectively. "
-            "Don't omit a single detail. "
-            "Do not provide extra analysis. "
-            "If the image is one or multiple charts, after output the extracted information, "
-            "also return the extracted data in one or multiple clean markdown table format. "
-            "The table should include appropriate headers and rows matching the chart data. "
-            "If it is not a chart, just output the extracted information."
-        )
+    def get_describe_option(self, option) -> str:
+        if option == "paddleocr":
+            return self._describe_picture_task_options_paddleocr
+        elif option == "internvl":
+            return self._describe_picture_task_options_internvl
+        elif option == "api":
+            return self._describe_picture_task_options_api
+        else:
+            raise ValueError(f"Unknown describe option: {option}")
+
+    def get_describe_prompt(self, option, typ) -> str:
+        if option == "api" or option == "internvl":
+            return """
+You are an expert image analyzer. The input image belongs to exactly one of the following four categories:
+
+1. Text → contains only text content, may have inline formulas
+2. Table → contains structured tables or tabular data
+3. Chart → bar chart, line chart, pie chart, scatter plot, radar chart, etc.
+4. Formula → mathematical equations, chemical formulas, physical formulas, handwritten or printed formulas
+5. Picture → all other images (photo, illustration, screenshot, diagram without table/chart/formula)
+
+Strict output rules:
+If the image is Text:
+- First line: **Type: Text**
+- Output ONLY plain text content extracted from the image.
+- if there are inline formulas, please use LaTeX format enclosed in $$ delimiters.
+
+If the image is Table:
+- First line: **Type: Table**
+- Output ONLY clean Markdown tables.
+- Include all headers and data exactly as shown.
+- Do not add any text outside the Markdown table.
+- Multiple tables are separated by a blank line.
+
+If the image is Chart:
+- First line: **Type: Chart**
+- Extract all data and convert each chart into a clean Markdown table with clear headers.
+- Output ONLY the Markdown tables, no explanations.
+- Multiple charts are separated by a blank line.
+
+If the image is Formula:
+- First line: **Type: Formula**
+- Output ONLY LaTeX equations using $$ delimiters.
+- One equation per line if there are multiple.
+- Do not add any text outside the LaTeX.
+
+If the image is Picture:
+- First line: **Type: Picture**
+- Then provide a concise bullet-point description (3–7 bullets) of the most visually significant aspects of the image.
+- The model may freely choose which aspects matter most (e.g., objects, composition, colors, style, relationships, notable details, or text if present).
+- Keep total output under 150 words.
+
+Never add extra explanations, apologies, or code fences.
+Always classify correctly and follow the corresponding format strictly.
+VERY IMPORTANT!!! Although the prompt is written in English, Sometimes the text in the file is written by Chinese. Keep all text exactly as shown in the image.
+"""
+
+        elif typ == 'Test':
+            return 'OCR:'
+        elif typ == 'Table':
+            return 'Table Recognition:'
+        elif typ == 'Formula' or typ == 'Inline-Formula':
+            return 'Formula Recognition:'
+        elif typ == 'Chart':
+            return 'Chart Recognition:'
+        elif typ == 'Picture':
+            pass # ocr model cannot handle picture description task
+        else:
+            raise ValueError(f"Unknown prompt type: {typ}")
+    
 
     def prepare_image(
         self,
@@ -285,7 +367,7 @@ class PageParser:
     async def _inference_with_vllm_intern_vl(self, image, prompt):
         task = InferenceTask(
             start_child_span("InferenceTask", None),
-            self._describe_picture_task_options,
+            self._describe_picture_task_options_internvl,
             "describe_picture_task",
             image,
             prompt,

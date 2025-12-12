@@ -17,7 +17,7 @@ from app.utils.tracing import get_tracer, traced
 from dots_ocr.utils.image_utils import PILimage_to_base64, PILimage_to_base64_async
 from dots_ocr.utils.prompts import dict_promptmode_to_prompt
 from dots_ocr.model.layout_service import sort_bboxes
-
+from dots_ocr.utils.paddle_postprocess import transform_latex, transform_table
 
 class InferenceTaskOptions(BaseModel):
     model_name: str
@@ -36,6 +36,10 @@ class InferenceTaskOptions(BaseModel):
                 return self.timeout[-1]
             return self.timeout[attempt_index]
         return self.timeout
+    
+class ApiInferenceTaskOptions(InferenceTaskOptions):
+    api_key: str
+    api_base_url: str
 
 
 class InferenceTaskStats(BaseModel):
@@ -72,6 +76,8 @@ class InferenceTask:
 
     @property
     def model_address(self) -> str:
+        if isinstance(self._options, ApiInferenceTaskOptions):
+            return self._options.api_base_url
         return f"http://{self._options.model_host}:{self._options.model_port}/v1"
 
     @property
@@ -140,8 +146,12 @@ class InferenceTask:
     @traced()
     async def inference_with_vllm(self, prompt=None):
         if self._client is None:
+            api_key = "EMPTY" # IMPORTANT: vLLM server requires an api_key which cann't be None or "", even though it does not validate it.
+            if isinstance(self._options, ApiInferenceTaskOptions):
+                if self._options.api_key:
+                    api_key = self._options.api_key
             self._client = AsyncOpenAI(
-                api_key=f'{os.environ.get("API_KEY", "0")}',
+                api_key=api_key,
                 base_url=self.model_address,
                 timeout=6000,
                 max_retries=0,
@@ -169,7 +179,7 @@ class InferenceTask:
         try:
             start_time = time.perf_counter()
             logger.debug(
-                f"Sending request {self._task_id} to vLLM model{self._options.model_name}: image size: {self.size()/1024:.2f} KB. image resolution: {self._image.width}x{self._image.height}. "
+                f"Sending request {self._task_id} to vLLM model {self._options.model_name}: image size: {self.size()/1024:.2f} KB. image resolution: {self._image.width}x{self._image.height}. "
             )
             response = await self._client.chat.completions.create(
                 messages=messages,
@@ -196,7 +206,17 @@ class InferenceTask:
                     f"Missing model_id or provider in response for task {self.task_id}, model_id: {model_id}, provider: {model_provider}, usage: {response.usage}"
                 )
             response = response.choices[0].message.content
-            return response
+            if self._options.model_name == "PaddleOCR-VL":
+                if prompt == "Formula Recognition:":
+                    posprcessed_response = transform_latex(response)
+                elif prompt == "Table Recognition:":
+                    posprcessed_response = transform_table(response)
+                else:
+                    posprcessed_response = response
+                return posprcessed_response
+            else:
+                return response
+        
         except httpx.TimeoutException:
             logger.error(f"request timeout for task {self.task_id}")
             # TODO(tatiana): why except the error and return error str?

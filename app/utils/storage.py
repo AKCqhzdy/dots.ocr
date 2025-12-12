@@ -43,6 +43,7 @@ class StorageManager:
     @traced()
     async def upload_file(self, bucket, key, local_path, is_s3):
         if not local_path or not os.path.exists(local_path):
+            logger.error(f"Local file {local_path} does not exist.")
             return None
         try:
             if is_s3:

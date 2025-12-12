@@ -127,3 +127,4 @@ app/output
 
 charts/
 logs/
+debug/
