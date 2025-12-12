@@ -49,7 +49,7 @@ class PdfExtractor:
     ) -> str:
         if bbox:
             rect = fitz.Rect(bbox)
-            text = page.get_text("text", clip=rect)
+            text = page.get_text("text", clip=rect, flags=0)
         else:
             text = page.get_text("text")
         text = re.sub(r"(?<!\n)\n(?!\n)", " ", text) 
