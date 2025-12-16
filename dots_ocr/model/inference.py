@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import openai
 import time
 from typing import List, Optional, Union
 
@@ -118,11 +119,18 @@ class InferenceTask:
                         result = await self._run()
                         self._completion_future.set_result(result)
                         break
-                    except APITimeoutError as e:  # retry on timeout
+                    except (APITimeoutError, openai.RateLimitError, httpx.TimeoutException, httpx.RequestError) as e: 
                         self._last_failure_reason.append(type(e).__name__)
                         if self.is_last_attempt():
                             self._completion_future.set_exception(e)
                         span.record_exception(e)
+                        
+                        if isinstance(e, openai.RateLimitError) or (hasattr(e, 'status_code') and e.status_code == 429):
+                            wait_time = 5 * self._stats.attempt_num
+                            logger.warning(f"Hit 429 Rate Limit. Sleeping for {wait_time:.2f}s before retry...")
+                            await asyncio.sleep(wait_time)
+                        else:
+                            logger.warning(f"Task failed with {type(e).__name__}, retrying...")
                     except Exception as e:
                         self._last_failure_reason.append(type(e).__name__)
                         logger.error(
@@ -161,12 +169,12 @@ class InferenceTask:
             prompt = self._prompt
 
         def resize_image(img: Image.Image, max_long_size = 2048) -> Image.Image:
-            if max(img.width, img.height) <= max_long_size:
-                return img
-            ratio = max_long_size / max(img.width, img.height)
-            new_size = (int(img.width * ratio), int(img.height * ratio))
-            logger.info(f"Resizing image from {img.width}x{img.height} to {new_size}")
-            return img.resize(new_size, Image.Resampling.LANCZOS)
+            # if max(img.width, img.height) <= max_long_size:
+            return img
+            # ratio = max_long_size / max(img.width, img.height)
+            # new_size = (int(img.width * ratio), int(img.height * ratio))
+            # logger.info(f"Resizing image from {img.width}x{img.height} to {new_size}")
+            # return img.resize(new_size, Image.Resampling.LANCZOS)
         image = resize_image(self._image.copy())
         messages = [
             {
@@ -226,6 +234,11 @@ class InferenceTask:
             else:
                 return response
         
+        except openai.APIStatusError as e:
+            logger.error(f"OpenAI API Error for task {self.task_id}: {e}")
+            logger.error(f"Error details: Status: {e.status_code}, Msg: {e.message}")
+            raise e
+            
         except httpx.TimeoutException:
             logger.error(f"request timeout for task {self.task_id}")
             # TODO(tatiana): why except the error and return error str?
