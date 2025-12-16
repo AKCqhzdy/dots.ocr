@@ -49,7 +49,7 @@ class LayoutDetectionService():
                 'paragraph_title': 'Section-header',
                 'text': 'Text',
                 'number': 'Text',
-                'page_number': 'Text',
+                'page_number': 'Page-footer',
                 'header': 'Page-header',
                 'footer': 'Page-footer',
 
