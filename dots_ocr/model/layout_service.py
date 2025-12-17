@@ -3,7 +3,7 @@ from typing import Tuple, Union, List, Dict, Any
 from PIL import Image
 import asyncio
 import numpy as np
-from paddleocr import LayoutDetection
+from paddleocr import LayoutDetection, DocPreprocessor
 from transformers import LayoutLMv3ForTokenClassification
 from dots_ocr.model.reader_helper import boxes2inputs, prepare_inputs, parse_logits
 
@@ -295,3 +295,78 @@ async def get_layout_reader_service() -> LayoutReaderService:
 async def sort_bboxes(bboxes: List[List[float]], width, height) -> List[int]:
     model_service = await get_layout_reader_service()
     return await model_service._sort_bboxes(bboxes, width, height)
+
+
+_doc_orientation_service = None
+
+class DocOrientationService:
+    def __init__(
+        self,
+        model_name: str = "PP-LCNet_x1_0_doc_ori",
+        use_doc_unwarping: bool = False # default disable unwarping for performance consideration. Open it can improve accuracy on some warped documents. But will make the picture blurry and slow down a bit.
+    ): # don't have batch size param
+        """
+        Initialize the DocOrientationService with PaddleOCR DocPreprocessor.
+        """
+        self.model_name = model_name
+        self._model_service = DocPreprocessor(
+            doc_orientation_classify_model_name=model_name,
+            use_doc_orientation_classify=True,
+            use_doc_unwarping=use_doc_unwarping,
+            device="cpu",
+        )
+
+    async def _detect_orientations(
+        self,
+        image_input: Union[str, List[str], Image.Image, List[Image.Image], np.ndarray, List[np.ndarray]]
+    ) -> List[int]:
+        """
+            Public wrapper to detect orientation for a list of images.
+            Args:
+                image_input: Single image or list of images (PIL Image, numpy array, or image path).
+
+            Returns:
+                List of angles in degrees (0, 90, 180, 270).
+        """
+        if not isinstance(image_input, list):
+            image_input = [image_input]
+            
+        def _to_numpy(img):
+            if isinstance(img, Image.Image):
+                return np.array(img)
+            return img
+        image_input_trans = [_to_numpy(img) for img in image_input]
+        
+        result = await asyncio.to_thread(
+            self._model_service.predict,
+            image_input_trans,
+        )
+        angles = [res["angle"] for res in result]
+        return angles
+
+async def get_doc_orientation_service() -> DocOrientationService:
+    global _doc_orientation_service
+    if _doc_orientation_service is None:
+        logger.info("Loading Document Orientation model...")
+        _doc_orientation_service = await asyncio.to_thread(DocOrientationService)
+    return _doc_orientation_service
+
+async def detect_orientation(image_input) -> List[int]:
+    model_service = await get_doc_orientation_service()
+    return await model_service._detect_orientations(image_input)
+
+async def detect_orientation_and_rotate(image_input: Union[Image.Image, List[Image.Image]]) -> Union[Image.Image, List[Image.Image]]:
+    angles = await detect_orientation(image_input)
+    if not isinstance(image_input, list):
+        return image_input.rotate(angles[0], expand=True)
+        
+    rotated_images = []
+    for img, angle in zip(image_input, angles):
+        rotated_img = img.rotate(angle, expand=True)
+        rotated_images.append(rotated_img)
+    return rotated_images
+
+if __name__ == "__main__":
+    image_path = ["/dots.ocr/t1.png", "/dots.ocr/t2.png"]
+    results = asyncio.run(detect_orientation(image_path))
+    print(results)

@@ -17,7 +17,7 @@ from app.utils.tracing import get_tracer, start_child_span, traced
 from dots_ocr.model.inference import InferenceTask, OcrInferenceTask, OfflineBatchInferenceTask,OfflineLayoutReaderInferenceTask
 from dots_ocr.utils.page_parser import PageParser
 from dots_ocr.utils.pdf_extractor import PdfExtractor
-from dots_ocr.model.layout_service import sort_bboxes
+from dots_ocr.model.layout_service import detect_orientation_and_rotate
 from dots_ocr.utils.directory_entry import DirectoryStructure
 from dots_ocr.utils.rotate import auto_rotate_and_deskew
 
@@ -583,6 +583,8 @@ class PipeOcrTask(OcrTask):
         origin_image, scale_factor = self._pdf_extractor.page_to_image(self._page_index, self._parser.dpi)
         # rotate and deskew
         # origin_image = auto_rotate_and_deskew(origin_image)
+        origin_image = await detect_orientation_and_rotate(origin_image)
+        logger.debug(f"Processed rotation successfully. Results: {origin_image}")
         # transform toc coordinates from pdf space to image space
         logger.debug(f"Page index: {self._page_index}, TOC: {self._toc}")
         if self._toc is not None:
