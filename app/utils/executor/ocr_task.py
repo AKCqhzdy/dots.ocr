@@ -19,6 +19,7 @@ from dots_ocr.utils.page_parser import PageParser
 from dots_ocr.utils.pdf_extractor import PdfExtractor
 from dots_ocr.model.layout_service import sort_bboxes
 from dots_ocr.utils.directory_entry import DirectoryStructure
+from dots_ocr.utils.rotate import auto_rotate_and_deskew
 
 class OcrTaskModel(BaseModel):
     job_response: JobResponseModel
@@ -580,6 +581,8 @@ class PipeOcrTask(OcrTask):
             dict: keys are "md", "md_nohf", "json", "page_no"
         """
         origin_image, scale_factor = self._pdf_extractor.page_to_image(self._page_index, self._parser.dpi)
+        # rotate and deskew
+        # origin_image = auto_rotate_and_deskew(origin_image)
         # transform toc coordinates from pdf space to image space
         logger.debug(f"Page index: {self._page_index}, TOC: {self._toc}")
         if self._toc is not None:
@@ -730,8 +733,6 @@ class PipeOcrTask(OcrTask):
                 raise
         
         # post-process and save results
-
-
         try:
             cells = await self._parser.save_results(
                 cells,
