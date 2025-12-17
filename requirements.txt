@@ -43,3 +43,6 @@ prometheus-fastapi-instrumentator==7.1.0
 #    python3 -m pip install paddleocr
 paddlepaddle==3.2.0
 paddleocr
+
+pytesseract
+deskew
