@@ -92,7 +92,7 @@ class TestParserAPI:
                 status_response.get("message", "")
 
                 # Check if job is completed (success or failure)
-                if status in ["completed", "failed", "canceled"]:
+                if status in ["completed", "failed", "cancelled"]:
                     logger.info(f"Job {OCRJobId} completed with status: {status}")
                     return status_response
 
