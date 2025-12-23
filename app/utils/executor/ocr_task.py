@@ -54,6 +54,7 @@ class OcrTask:
         self._describe_picture_pool = describe_picture_pool
         self._parser = parser
         self._page_index = 0
+        self._task = None
 
     @property
     def job_id(self):
@@ -82,10 +83,18 @@ class OcrTask:
     @property
     def token_usage(self):
         return self._stats.token_usage
+    
+    async def cancel(self):
+        logger.info(f"Cancelling OcrTask {self.task_id}")
+        if self._task:
+            self._task.cancel()
+        self._stats.status = "cancelled"
+        logger.info(f"OcrTask {self.task_id} cancelled")
 
     @traced()
     async def _submit_ocr_inference_task(self, task_id, image, prompt):
         task = OcrInferenceTask(
+            self._stats,
             start_child_span(f"OcrInferenceTask {task_id}"),
             self._parser.ocr_inference_task_options,
             task_id,
@@ -97,7 +106,6 @@ class OcrTask:
 
     @traced()
     async def _submit_describe_picture_task(self, task_id, image, category, option: str):
-
         task = InferenceTask(
             start_child_span(f"DescribePictureTask {task_id}"),
             self._parser.get_describe_option(option),
@@ -182,14 +190,20 @@ class OcrTask:
                 picture_blocks.append(picture_block)
 
             await asyncio.gather(*futures)
-
+        except asyncio.CancelledError:
+            logger.info("Described schedule loop cancelled. Cleaning up child tasks...")
+            raise
         except Exception as e:
             logger.error(f"Error submitting picture description inference task: {e}")
             raise
+        finally:
+            for inference_task in tasks:
+                if not inference_task.is_done:
+                    inference_task.cancel()
 
         for picture_block, future, task in zip(picture_blocks, futures, tasks):
             if future.cancelled():
-                logger.warning(
+                logger.debug(
                     "Future for picture description was cancelled for "
                     f"page {self._page_index} of doc {self._task_model.original_file_uri}",
                 )
@@ -239,13 +253,20 @@ class OcrTask:
 
             await asyncio.gather(*futures)
 
+        except asyncio.CancelledError:
+            logger.info("Described schedule loop cancelled. Cleaning up child tasks...")
+            raise
         except Exception as e:
             logger.error(f"Error submitting picture description inference task: {e}")
             raise
+        finally:
+            for task in futures:
+                if not task.done():
+                    task.cancel()
 
         for picture_block, future, task in zip(picture_blocks, futures, tasks):
             if future.cancelled():
-                logger.warning(
+                logger.debug(
                     "Future for picture description was cancelled for "
                     f"page {self._page_index} of doc {self._task_model.original_file_uri}",
                 )
@@ -289,7 +310,8 @@ class OcrTask:
                         f"Start processing page {self._page_index} of "
                         f"doc {self._task_model.original_file_uri} (attempt {self._stats.attempt})"
                     )
-                    result = await self._run()
+                    self._task = asyncio.create_task(self._run())
+                    result = await self._task
                     self._stats.task_execution_time = time.perf_counter() - start_time
                     if self._stats.status != "fallback":
                         self._stats.status = "finished"
@@ -299,9 +321,18 @@ class OcrTask:
                     span.set_attribute("task_status", self._stats.status)
                     span.add_event("Finished the OCR task")
                     return result
+                except asyncio.CancelledError as e:
+                    logger.info(
+                        f"OCR task for page {self._page_index} of "
+                        f"doc {self._task_model.original_file_uri} was cancelled."
+                    )
+                    self._stats.status = "cancelled"
+                    span.set_attribute("task_status", self._stats.status)
+                    span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+                    return None
                 except Exception as e:
                     logger.error(f"Error running OCR task: {e}", exc_info=True)
-                    if self._stats.status != "timeout":
+                    if self._stats.status != "timeout" or self._stats.status != "cancelled":
                         self._stats.status = "failed"
                     self._stats.error_msg = str(e)
                     span.set_attribute("task_status", self._stats.status)
@@ -730,8 +761,6 @@ class PipeOcrTask(OcrTask):
                 raise
         
         # post-process and save results
-
-
         try:
             cells = await self._parser.save_results(
                 cells,

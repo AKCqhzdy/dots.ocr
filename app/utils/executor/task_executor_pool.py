@@ -1,5 +1,5 @@
 import asyncio
-from typing import List
+from typing import List, Dict
 
 from loguru import logger
 from pydantic import BaseModel
@@ -11,15 +11,16 @@ class TaskExecutorPool(BaseModel):
     max_queue_size: int = 4
     concurrent_task_limit: int = 4
     name: str = "TaskExecutorPool"
-
+    
     _workers: List[asyncio.Task] = []
     # TODO(tatiana): use a priority queue to improve job completion time?
     _task_queue: asyncio.Queue = None
+    _task_dict: {}
 
     def start(self):
         logger.info(f"Starting up {self.concurrent_task_limit} {self.name} workers...")
         self._task_queue = asyncio.Queue(self.max_queue_size)
-
+        self._task_dict = {} 
         for i in range(self.concurrent_task_limit):
             task = asyncio.create_task(self._worker_loop(f"TaskWorker-{i}"))
             self._workers.append(task)
@@ -30,8 +31,18 @@ class TaskExecutorPool(BaseModel):
         asyncio.gather(*self._workers, return_exceptions=True)
         logger.info("All worker tasks have been stopped.")
 
+    def is_task_waiting(self, task_id: str) -> bool:
+        return task_id in self._task_dict
+
     async def add_task(self, task):
+        self._task_dict[task.task_id] = task
         await self._task_queue.put(task)
+        
+    async def cancel_task(self, task_id: str):
+        task = self._task_dict.get(task_id)
+        if task:
+            task.cancel()
+            self._task_dict.pop(task.task_id)
 
     async def _worker_loop(self, worker_id: str):
         logger.debug(f"{worker_id} started")
@@ -39,6 +50,7 @@ class TaskExecutorPool(BaseModel):
             try:
                 task = await self._task_queue.get()
                 await task.process()
+                self._task_dict.pop(task.task_id)
                 self._task_queue.task_done()
             except asyncio.CancelledError:
                 logger.debug(f"Worker {worker_id} is shutting down.")

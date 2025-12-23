@@ -422,10 +422,10 @@ async def stream_and_upload_generator(job_response: JobResponseModel):
                                 token_usage,
                             ) in dots_parser.schedule_pdf_tasks(job_response):
                                 sum_token_usage(total_token_usage, token_usage)
-                                if status in ["fallback", "timeout", "failed"]:
+                                if status in ["fallback", "timeout", "cancelled", "failed"]:
                                     # TODO(tatiana): save failed/fallback task to OCRTable and
                                     # allow partial rerun after fix
-                                    if status == "failed" or status == "timeout":
+                                    if status == "failed" or status == "timeout" or status == "cancelled":
                                         job_response.task_stats.failed_task_count += 1
                                         continue
                                     job_response.task_stats.fallback_task_count += 1
@@ -640,7 +640,7 @@ async def parse_file(
                 },
                 status_code=202,
             )
-        if existing_record.status in ["completed", "failed", "canceled"]:
+        if existing_record.status in ["completed", "failed", "cancelled"]:
             # allow re-process but check md5 first in the worker
             pass
 
@@ -803,6 +803,35 @@ async def token_usage(ocr_job_id: str):
         return record.tokenUsage
     return job_response.token_usage
 
+@app.post("/cancel/{ocr_job_id}")
+async def cancel_job(ocr_job_id: str):
+    logger.info(f"cancel job request for {ocr_job_id}")
+    
+    job_response = job_executor_pool.get_job_response(ocr_job_id)
+    record = await get_record_pgvector(ocr_job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job_response is None or job_response.status in ["completed", "failed", "cancelled"]:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "success": "false",
+                "status_code": 400,
+                "message": f"Job already {record.status}, cannot be cancelled",
+            },
+        )
+    await job_executor_pool.cancel_job(ocr_job_id)
+    
+    return JSONResponse(
+        status_code=202, content={"success": "true", "status_code": 202, "message": "Job cancellation requested"}
+    )
+@app.post("/cancel_all")
+async def cancel_all_jobs():
+    logger.info("cancel all jobs request")
+    await job_executor_pool.cancel_all_jobs()
+    return JSONResponse(
+        status_code=202, content={"success": "true", "status_code": 202, "message": "All job cancellations requested"}
+    )
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=6008, reload=True)

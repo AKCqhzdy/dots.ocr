@@ -170,24 +170,29 @@ class Job:
         self.job_response = job_response
         self._on_status_change = on_status_change
         self._execute = execute
-        self._cancel_requested = False
+        self._task = None
 
     async def process(self):
-        # TODO(tatiana): handle the cancellation logic here. Now just do a trivial cancellation.
-        if self._cancel_requested:
-            logger.info(f"Job {self.job_response.job_id} is cancelled.")
-            await self._set_cancelled()
-            return
-
         with trace.use_span(self._span, end_on_exit=False):
             try:
+                if self.job_response.status == "cancelled":
+                    logger.info(
+                        f"Job {self.job_response.job_id} is already cancelled. "
+                        "Skipping execution."
+                    )
+                    return
                 logger.info(f"Job {self.job_response.job_id} starts execution now.")
                 await self._set_processing()
-                await self._execute(self.job_response)
+                self._task = asyncio.create_task(self._execute(self.job_response))
+                await self._task
                 logger.success(
                     f"Job {self.job_response.job_id} successfully processed."
                 )
                 await self._set_finished()
+            except asyncio.CancelledError:
+                logger.info(f"Job {self.job_response.job_id} cancelled during execution.")
+                if self.job_response.status != "cancelled":
+                    logger.error("Unexpected CancelledError: job isn't set to cancelled.")
             except Exception as e:
                 logger.error(
                     f"Job {self.job_response.job_id} failed. Final error: {e}",
@@ -195,9 +200,11 @@ class Job:
                 )
                 await self._set_failed(e)
 
-    def cancel(self):
-        # TODO(tatiana): handle the cancellation logic here. Now just do a trivial cancellation.
-        self._cancel_requested = True
+    async def cancel(self):
+        if self._task and not self._task.done():
+            self._task.cancel()
+            logger.info(f"Task cancelled for job {self.job_response.job_id}")
+        await self._set_cancelled()
 
     async def restore(self):
         # TODO(tatiana): support failure recovery and resume processing
@@ -229,7 +236,7 @@ class Job:
         self._span.end()
 
     async def _set_cancelled(self):
-        self.job_response.status = "canceled"
+        self.job_response.status = "cancelled"
         self.job_response.message = "Job is cancelled"
         await self._on_status_change(self.job_response)
         self._span.set_status(trace.Status(trace.StatusCode.ERROR, "Job is cancelled"))
@@ -262,7 +269,7 @@ class JobExecutorPool(BaseModel):
         for worker in self._workers:
             worker.cancel()
         asyncio.gather(*self._workers, return_exceptions=True)
-        logger.info("All worker tasks have been canceled.")
+        logger.info("All worker tasks have been cancelled.")
 
     def is_job_waiting(self, job_id: str) -> bool:
         return job_id in self._job_dict
@@ -279,7 +286,16 @@ class JobExecutorPool(BaseModel):
         """
         job = self._job_dict.get(job_id)
         if job:
-            job.cancel()
+            await job.cancel()
+    
+    async def cancel_all_jobs(self):
+        results = await asyncio.gather(
+            *(job.cancel() for job in self._job_dict.values()),
+            return_exceptions=True,
+        )
+        for job, result in zip(self._job_dict.values(), results):
+            if isinstance(result, Exception):
+                logger.error("Failed to cancel job %s", job, exc_info=result)
 
     def get_job_status(self, job_id: str) -> Optional[JobStatusType]:
         job = self._job_dict.get(job_id, None)
@@ -294,23 +310,29 @@ class JobExecutorPool(BaseModel):
         return job.job_response
 
     async def _clean_old_terminated_jobs(self):
-        logger.debug(f"Starting job clean task")
+        logger.debug("Starting job clean task")
         while True:
             try:
+                now = datetime.now(UTC)
+                to_remove = []
+
                 for job_id, job in self._job_dict.items():
-                    # IF job is terminated
                     if is_job_terminated(job.job_response.status):
-                        # And it is terminated for a longer period than the retention period
-                        diff = (datetime.now(UTC) - job.job_response.updated_at).seconds
+                        diff = (now - job.job_response.updated_at).total_seconds()
                         if diff > self.terminated_job_retention_seconds:
-                            # Remove the job from history
-                            logger.debug(
-                                f"Remove job {job_id} from history, "
-                                f"job status: {job.job_response.status}, "
-                                f"updated at: {job.job_response.updated_at}"
-                            )
-                            self._job_dict.pop(job_id)
+                            to_remove.append(job_id)
+
+                for job_id in to_remove:
+                    job = self._job_dict.pop(job_id, None)
+                    if job:
+                        logger.debug(
+                            f"Remove job {job_id} from history, "
+                            f"job status: {job.job_response.status}, "
+                            f"updated at: {job.job_response.updated_at}"
+                        )
+
                 await asyncio.sleep(self.job_clean_interval_seconds)
+
             except asyncio.CancelledError:
                 logger.info("Job clean task is shutting down.")
                 break

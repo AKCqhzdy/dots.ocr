@@ -208,7 +208,6 @@ class DotsOCRParser:
         tasks = []
         job_response.task_stats.total_task_count = pdf_page_num
 
-        failed_tasks = []
         with tqdm(
             total=pdf_page_num, desc="Processing PDF pages (schedule)"
         ) as pbar:
@@ -258,39 +257,10 @@ class DotsOCRParser:
                 tasks.append(asyncio.create_task(self._concurrent_run(task)))
 
             # retry by stages instead of retrying each task asynchronously
+            failed_tasks = []
             timeout_tasks = []
-            for future in asyncio.as_completed(tasks):
-                task_result, task = await future
-                if task_result is None:
-                    if task.error_msg is not None:
-                        if task._stats.status == "timeout":
-                            logger.warning(
-                                f"Error processing task {task.job_id}-{task.task_id}: "
-                                f"{task.error_msg}. "
-                                f"Notice timeout errors will not retried because it cause by ocr inference and already have retried within Inferencetask."
-                            )
-                            timeout_tasks.append(task)
-                        else:
-                            logger.warning(
-                                f"Error processing task {task.job_id}-{task.task_id}: "
-                                f"{task.error_msg}"
-                            )
-                            failed_tasks.append(task)
-                    continue
-                task.final_success()
-                pbar.update(1)
-                yield task_result, task.status, task.token_usage
-
-            retry_run = self.parser.page_retry_number
-            retry_run = 0
-            while len(failed_tasks) > 0 and retry_run > 0:
-                task_ids = [task.task_id for task in failed_tasks]
-                logger.info(f"Retrying parsing pages {','.join(task_ids)}")
-                retry_run = retry_run - 1
-                tasks = []
-                for task in failed_tasks:
-                    tasks.append(asyncio.create_task(self._concurrent_run(task)))
-                failed_tasks = []
+            cancelled_tasks = []
+            try:
                 for future in asyncio.as_completed(tasks):
                     task_result, task = await future
                     if task_result is None:
@@ -302,6 +272,11 @@ class DotsOCRParser:
                                     f"Notice timeout errors will not retried because it cause by ocr inference and already have retried within Inferencetask."
                                 )
                                 timeout_tasks.append(task)
+                            if task._stats.status == "cancelled":
+                                logger.debug(
+                                    f"Task {task.job_id}-{task.task_id} was cancelled."
+                                )
+                                cancelled_tasks.append(task)
                             else:
                                 logger.warning(
                                     f"Error processing task {task.job_id}-{task.task_id}: "
@@ -313,26 +288,76 @@ class DotsOCRParser:
                     pbar.update(1)
                     yield task_result, task.status, task.token_usage
 
-            if len(failed_tasks) > 0 or len(timeout_tasks) > 0:
-                failed_task_ids = [task.task_id for task in failed_tasks]
-                timeout_task_ids = [task.task_id for task in timeout_tasks]
-                error_msg = (
-                    f"Failed to process {len(failed_tasks) + len(timeout_tasks)} pages in "
-                    f"{job_response.input_s3_path} after {self.parser.page_retry_number}"
-                    f" retries: {failed_task_ids}. "
-                    f" inference timeout: {timeout_task_ids}"
-                )
-                logger.error(error_msg)
-                for task in failed_tasks:
-                    task.final_failure(error_msg)
-                    yield {
-                        "page_no": int(task.task_id)
-                    }, task.status, task.token_usage
-                for task in timeout_tasks:
-                    task.final_failure(error_msg)
-                    yield {
-                        "page_no": int(task.task_id)
-                    }, task.status, task.token_usage
+                retry_run = self.parser.page_retry_number
+                retry_run = 0
+                while len(failed_tasks) > 0 and retry_run > 0:
+                    task_ids = [task.task_id for task in failed_tasks]
+                    logger.info(f"Retrying parsing pages {','.join(task_ids)}")
+                    retry_run = retry_run - 1
+                    tasks = []
+                    for task in failed_tasks:
+                        tasks.append(asyncio.create_task(self._concurrent_run(task)))
+                    failed_tasks = []
+                    for future in asyncio.as_completed(tasks):
+                        task_result, task = await future
+                        if task_result is None:
+                            if task.error_msg is not None:
+                                if task._stats.status == "timeout":
+                                    logger.warning(
+                                        f"Error processing task {task.job_id}-{task.task_id}: "
+                                        f"{task.error_msg}. "
+                                        f"Notice timeout errors will not retried because it cause by ocr inference and already have retried within Inferencetask."
+                                    )
+                                    timeout_tasks.append(task)
+                            if task._stats.status == "cancelled":
+                                logger.debug(
+                                    f"Task {task.job_id}-{task.task_id} was cancelled."
+                                )
+                                cancelled_tasks.append(task)
+                            else:
+                                logger.warning(
+                                    f"Error processing task {task.job_id}-{task.task_id}: "
+                                    f"{task.error_msg}"
+                                )
+                                failed_tasks.append(task)
+                            continue
+                        task.final_success()
+                        pbar.update(1)
+                        yield task_result, task.status, task.token_usage
+
+                if len(failed_tasks) > 0 or len(timeout_tasks) > 0 or len(cancelled_tasks) > 0:
+                    failed_task_ids = [task.task_id for task in failed_tasks]
+                    timeout_task_ids = [task.task_id for task in timeout_tasks]
+                    cancelled_tasks_ids = [task.task_id for task in cancelled_tasks]
+                    error_msg = (
+                        f"Failed to process {len(failed_tasks) + len(timeout_tasks) + len(cancelled_tasks)} pages in "
+                        f"{job_response.input_s3_path} after {self.parser.page_retry_number}"
+                        f" retries: {failed_task_ids}. "
+                        f" inference timeout: {timeout_task_ids}."
+                        f" cancelled tasks: {cancelled_tasks_ids}."
+                    )
+                    logger.error(error_msg)
+                    for task in failed_tasks:
+                        task.final_failure(error_msg)
+                        yield {
+                            "page_no": int(task.task_id)
+                        }, task.status, task.token_usage
+                    for task in timeout_tasks:
+                        task.final_failure(error_msg)
+                        yield {
+                            "page_no": int(task.task_id)
+                        }, task.status, task.token_usage
+                    for task in cancelled_tasks:
+                        yield {
+                            "page_no": int(task.task_id)
+                        }, task.status, task.token_usage
+            except asyncio.CancelledError:
+                logger.info("Schedule loop cancelled. Cleaning up child tasks...")
+                raise
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
 
     @traced()
     async def schedule_pdf_tasks(

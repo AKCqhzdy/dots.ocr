@@ -20,7 +20,7 @@ class ModelIdentifier:
 
 
 class OcrTaskStats(BaseModel):
-    status: Literal["pending", "running", "failed", "finished", "fallback", "timeout"]
+    status: Literal["pending", "running", "failed", "finished", "fallback", "timeout", "cancelled"]
     error_msg: Optional[str] = None
     attempt: int = 0
     # The execution time for the successful attempt
