@@ -791,6 +791,17 @@ async def health_check():
 async def health():
     return await health_check()
 
+async def heartbeat():
+    while True:
+        now_time = datetime.now(UTC)
+        logger.info(f"-------------------{now_time}")
+        await asyncio.sleep(0.5)
+
+@app.post("/test")
+async def test_endpoint():
+    asyncio.create_task(heartbeat())
+    return {"message": "Test endpoint is working!"}
+    
 
 @app.get("/token_usage/{ocr_job_id}")
 async def token_usage(ocr_job_id: str):
