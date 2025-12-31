@@ -49,6 +49,7 @@ class InferenceTaskStats(BaseModel):
     # is _fallback_ocr() also timeout, is_timeout will be set to True in this function.
     is_fallback: bool = False
     is_timeout: bool = False
+    is_canncelled: bool = False
     attempt_num: int = 0
 
 
@@ -65,6 +66,8 @@ class InferenceTask:
         image: Image.Image,
         prompt: str,
     ):
+        self._execution_task: Optional[asyncio.Task] = None 
+        
         self._span = span
         self._options = options
         self._stats = InferenceTaskStats()
@@ -96,6 +99,14 @@ class InferenceTask:
     @property
     def is_timeout(self) -> bool:
         return self._stats.is_timeout
+    
+    @property
+    def is_canncelled(self) -> bool:
+        return self._stats.is_canncelled
+    
+    @property
+    def is_done(self) -> bool:
+        return self._execution_task is not None and self._execution_task.done()
 
     # Here we do not count input tokens for failures because now the model
     # is self-hosted and do not incur actual cost.
@@ -104,7 +115,7 @@ class InferenceTask:
         return self._stats.success_usage
 
     # TODO(tatiana): use tenacity.retry?
-    async def process(self):
+    async def _process_internal(self):
         with trace.use_span(self._span, end_on_exit=True):
             while self._stats.attempt_num < self._options.max_attempts:
                 self._span.add_event(f"attempt-{self._stats.attempt_num}")
@@ -118,6 +129,10 @@ class InferenceTask:
                         )
                         result = await self._run()
                         self._completion_future.set_result(result)
+                        break
+                    except asyncio.CancelledError:
+                        logger.info(f"Inference logic for {self.task_id} stopped safely.")
+                        self._completion_future.cancel()
                         break
                     except (APITimeoutError, openai.RateLimitError, httpx.TimeoutException, httpx.RequestError) as e: 
                         self._last_failure_reason.append(type(e).__name__)
@@ -140,6 +155,19 @@ class InferenceTask:
                         self._completion_future.set_exception(e)
                         span.record_exception(e)
                         break
+
+    def cancel(self):
+        self._stats.is_canncelled = True
+        if self._execution_task is not None and not self._execution_task.done():
+            logger.debug(f"Cancelling inference task {self.task_id} execution.")
+            self._execution_task.cancel()
+
+    async def process(self):
+        if self._stats.is_canncelled:
+            logger.debug(f"Inference task {self.task_id} has been cancelled before processing.")
+            return 
+        self._execution_task = asyncio.create_task(self._process_internal())
+        await self._execution_task
 
     def get_completion_future(self):
         return self._completion_future

@@ -11,12 +11,12 @@ JobStatusType = Literal[
     "pending",
     "processing",
     "failed",
-    "canceled",
+    "cancelled",
 ]
 
 
 def is_job_terminated(status: JobStatusType) -> bool:
-    return status in ["completed", "failed", "canceled"]
+    return status in ["completed", "failed", "cancelled"]
 
 
 class OCRTable(Base):
