@@ -2,6 +2,7 @@ import asyncio
 import re
 import time
 from pathlib import Path
+from functools import partial
 
 import fitz
 from loguru import logger
@@ -604,6 +605,67 @@ class PipeOcrTask(OcrTask):
         paths_to_upload["page_no"] = self._page_index
         return paths_to_upload
 
+    def extract_text_for_blocks(
+        self,
+        full_layout_info, 
+        scale_factor,
+        inline_formula_boxes, 
+        origin_image,  
+    ):
+        """
+        if can extract text from pdf, extract text for non-table/figure blocks
+        else crop image for these blocks
+        """
+        def is_box_in_container(inner_box, container_box):
+            c_x = (inner_box[0] + inner_box[2]) / 2
+            c_y = (inner_box[1] + inner_box[3]) / 2
+            return (container_box[0] <= c_x <= container_box[2] and 
+                    container_box[1] <= c_y <= container_box[3])
+        
+        blocks_list = []    
+        for info_block in full_layout_info:
+            if info_block["category"] in ["Table", "Picture", "Formula", "Inline-Formula", "Chart"]:
+                continue
+
+            block_in_pdf_size = [i / scale_factor for i in info_block["bbox"]]
+            
+            if self._pdf_extractor.check_extractable(self._page_index, block_in_pdf_size):
+                info_block["text"] = self._pdf_extractor.extract_text_from_page(
+                    self._page_index,
+                    block_in_pdf_size,
+                )
+                current_block_formulas = []
+                if inline_formula_boxes and "full_layout_info" in inline_formula_boxes:
+                    for info_block_f in inline_formula_boxes["full_layout_info"]:
+                        if is_box_in_container(info_block_f["bbox"], info_block["bbox"]):
+                            # assert each inline formula box is within only one text block
+                            text = info_block_f['text']
+                            if text.startswith('$$') and text.endswith('$$'):
+                                text = text[2:-2]
+                                if '$$' in text:
+                                    info_block_f['text'] = '\n' + info_block_f['text'] + '\n'
+                                else:
+                                    if '\n' in text:
+                                        text = text.strip('\n')
+                                        info_block_f['text'] = text
+                                    info_block_f['text'] = '$' + text + '$'
+                            block_in_pdf_size_f = [i / scale_factor for i in info_block_f["bbox"]]
+                            info_block_f['bbox'] = block_in_pdf_size_f
+                            current_block_formulas.append(info_block_f)
+                
+                info_block["text"] = self._pdf_extractor.extract_text_from_page(
+                    self._page_index,
+                    block_in_pdf_size,
+                    current_block_formulas,
+                )
+            else:
+                x0, y0, x1, y1 = info_block["bbox"]
+                cropped_img = origin_image.crop((x0, y0, x1, y1))
+                cropped_img.load()
+                blocks_list.append((info_block, cropped_img, "text"))
+                
+        return blocks_list
+
     @traced()
     async def _run(self):
         """
@@ -645,6 +707,7 @@ class PipeOcrTask(OcrTask):
         except Exception as e:
             logger.error(f"Error while detecting layout: {e}")
             raise
+        logger.debug(f"detected layout info successfully")
 
         # extract text for non-table/figure blocks
         try:
@@ -661,49 +724,21 @@ class PipeOcrTask(OcrTask):
                     )
                     raise
 
-            def is_box_in_container(inner_box, container_box):
-                c_x = (inner_box[0] + inner_box[2]) / 2
-                c_y = (inner_box[1] + inner_box[3]) / 2
-                return (container_box[0] <= c_x <= container_box[2] and 
-                        container_box[1] <= c_y <= container_box[3])
-            
-            blocks_list = []
-            for info_block in cells["full_layout_info"]:
-                if info_block["category"] in ["Table", "Picture", "Formula", "Inline-Formula", "Chart"]:
-                    pass
-                else:
-                    block_in_pdf_size = [i / scale_factor for i in info_block["bbox"]]
-                    
-                    if self._pdf_extractor.check_extractable(self._page_index, block_in_pdf_size) and False:
-                        current_block_formulas = []
-                        if inline_formula_boxes and "full_layout_info" in inline_formula_boxes:
-                            for info_block_f in inline_formula_boxes["full_layout_info"]:
-                                if is_box_in_container(info_block_f["bbox"], info_block["bbox"]):
-                                    # assert each inline formula box is within only one text block
-                                    text = info_block_f['text']
-                                    if text.startswith('$$') and text.endswith('$$'):
-                                        text = text[2:-2]
-                                        if '$$' in text:
-                                            info_block_f['text'] = '\n' + info_block_f['text'] + '\n'
-                                        else:
-                                            if '\n' in text:
-                                                text = text.strip('\n')
-                                                info_block_f['text'] = text
-                                            info_block_f['text'] = '$' + text + '$'
-                                    block_in_pdf_size_f = [i / scale_factor for i in info_block_f["bbox"]]
-                                    info_block_f['bbox'] = block_in_pdf_size_f
-                                    current_block_formulas.append(info_block_f)
-                        
-                        info_block["text"] = self._pdf_extractor.extract_text_from_page(
-                            self._page_index,
-                            block_in_pdf_size,
-                            current_block_formulas,
-                        )
-                    else:
-                        x0, y0, x1, y1 = info_block["bbox"]
-                        cropped_img = origin_image.crop((x0, y0, x1, y1))
-                        blocks_list.append( (info_block, cropped_img, "text") )
+            # extract text for other blocks
+            loop = asyncio.get_running_loop()
+            blocks_list = await loop.run_in_executor(
+                None,
+                partial(
+                    self.extract_text_for_blocks,
+                    full_layout_info=cells["full_layout_info"],
+                    scale_factor=scale_factor,
+                    inline_formula_boxes=inline_formula_boxes,
+                    origin_image=origin_image,
+                )
+            )
+            logger.debug(f"Extracted text successfully")
             try:
+                logger.debug(f"Start extracting texts in blocks for page {self._page_index}, total {len(blocks_list)} blocks")
                 await self._describe_pictures_in_blocks(blocks_list)
             except Exception as e:
                 logger.error(
