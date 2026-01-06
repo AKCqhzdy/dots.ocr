@@ -674,11 +674,7 @@ class PipeOcrTask(OcrTask):
                 else:
                     block_in_pdf_size = [i / scale_factor for i in info_block["bbox"]]
                     
-                    if self._pdf_extractor.check_extractable(self._page_index, block_in_pdf_size):
-                        info_block["text"] = self._pdf_extractor.extract_text_from_page(
-                            self._page_index,
-                            block_in_pdf_size,
-                        )
+                    if self._pdf_extractor.check_extractable(self._page_index, block_in_pdf_size) and False:
                         current_block_formulas = []
                         if inline_formula_boxes and "full_layout_info" in inline_formula_boxes:
                             for info_block_f in inline_formula_boxes["full_layout_info"]:
