@@ -196,14 +196,13 @@ class InferenceTask:
         if prompt is None:
             prompt = self._prompt
 
-        def resize_image(img: Image.Image, max_long_size = 2048) -> Image.Image:
-            # if max(img.width, img.height) <= max_long_size:
-            return img
-            # ratio = max_long_size / max(img.width, img.height)
-            # new_size = (int(img.width * ratio), int(img.height * ratio))
-            # logger.info(f"Resizing image from {img.width}x{img.height} to {new_size}")
-            # return img.resize(new_size, Image.Resampling.LANCZOS)
-        image = resize_image(self._image.copy())
+        max_long_size = 2048
+        image = self._image
+        if max(image.width, image.height) > max_long_size:
+            ratio = max_long_size / max(image.width, image.height)
+            new_size = (int(image.width * ratio), int(image.height * ratio))
+            logger.info(f"Resizing image from {image.width}x{image.height} to {new_size}")
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
         messages = [
             {
                 "role": "user",
