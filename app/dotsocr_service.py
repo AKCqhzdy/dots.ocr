@@ -26,6 +26,7 @@ from sys import stderr
 import httpx
 import uvicorn
 from aiorwlock import RWLock
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -86,6 +87,7 @@ if configs.PARSE_WITH_PIPELINE:
         name="LocalLayoutReaderTask",
     )
 
+cpu_executor = ThreadPoolExecutor(max_workers=configs.COMMON_CPU_WORKERS_NUM)
 page_parser = PageParser(
     ocr_inference_task_options=InferenceTaskOptions(
         model_name=configs.OCR_INFERENCE_NAME,
@@ -133,6 +135,7 @@ page_parser = PageParser(
         task_retry_count=configs.TASK_RETRY_COUNT,
     ),
     concurrency_limit=configs.CONCURRENT_OCR_TASK_LIMIT,
+    cpu_executor=cpu_executor,
 )
 dots_parser = DotsOCRParser(
     ocr_task_executor_pool=ocr_task_executor_pool,
@@ -153,7 +156,11 @@ async def lifespan(_: FastAPI):
     logger.add(stderr, level=configs.LOG_LEVEL)
     
     if configs.PARSE_WITH_PIPELINE:
-        await get_layout_detection_service()
+        await get_layout_detection_service(
+            cpu_executor,
+            configs.USE_ONNX,
+            configs.ONNX_CPU_WORKERS_NUM,
+            )
         await get_layout_reader_service()
 
     await pg_vector_manager.ensure_table_exists()

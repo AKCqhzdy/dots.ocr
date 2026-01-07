@@ -201,7 +201,6 @@ class OcrTask:
             for inference_task in tasks:
                 if not inference_task.is_done:
                     inference_task.cancel()
-
         for picture_block, future, task in zip(picture_blocks, futures, tasks):
             if future.cancelled():
                 logger.debug(
@@ -630,10 +629,6 @@ class PipeOcrTask(OcrTask):
             block_in_pdf_size = [i / scale_factor for i in info_block["bbox"]]
             
             if self._pdf_extractor.check_extractable(self._page_index, block_in_pdf_size):
-                info_block["text"] = self._pdf_extractor.extract_text_from_page(
-                    self._page_index,
-                    block_in_pdf_size,
-                )
                 current_block_formulas = []
                 if inline_formula_boxes and "full_layout_info" in inline_formula_boxes:
                     for info_block_f in inline_formula_boxes["full_layout_info"]:
@@ -672,7 +667,13 @@ class PipeOcrTask(OcrTask):
         Returns:
             dict: keys are "md", "md_nohf", "json", "page_no"
         """
-        origin_image, scale_factor = self._pdf_extractor.page_to_image(self._page_index, self._parser.dpi)
+        loop = asyncio.get_running_loop()
+        origin_image, scale_factor = await loop.run_in_executor(
+            self._parser.cpu_executor,
+            self._pdf_extractor.page_to_image,
+            self._page_index,
+            self._parser.dpi,
+        )
         # transform toc coordinates from pdf space to image space
         logger.debug(f"Page index: {self._page_index}, TOC: {self._toc}")
         if self._toc is not None:
@@ -725,9 +726,10 @@ class PipeOcrTask(OcrTask):
                     raise
 
             # extract text for other blocks
+            logger.debug(f"Start extracting texts in non-table/figure blocks for page {self._page_index}")
             loop = asyncio.get_running_loop()
             blocks_list = await loop.run_in_executor(
-                None,
+                self._parser.cpu_executor,
                 partial(
                     self.extract_text_for_blocks,
                     full_layout_info=cells["full_layout_info"],
@@ -745,7 +747,7 @@ class PipeOcrTask(OcrTask):
                     f"It's detected that in page {self._page_index} some texts is scanned. Error while extracting: {e}"
                 )
                 raise
-            logger.debug(f"Extracted text results: {cells}")
+            # logger.debug(f"Extracted text results: {cells}")
 
             # rebuild directory structure by toc
             if self._toc is not None and self._toc != []:

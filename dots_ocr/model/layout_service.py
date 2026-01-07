@@ -111,17 +111,20 @@ class LayoutDetectionBaseService():
         
         boxes[:] = [b for b, k in zip(boxes, keep) if k]
         return inline_formula_boxes
+    
 class LayoutDetectionService(LayoutDetectionBaseService):
     def __init__(
         self,
         model_name="PP-DocLayoutV2",
-        batch_size=1
+        batch_size=1,
+        cpu_executor=None
     ):
         self._model_name = model_name
         self._model_service = LayoutDetection(model_name=model_name)
-        self._batch_size = batch_size      
+        self._batch_size = batch_size
+        self.cpu_executor = cpu_executor
     
-    async def _transform_result(
+    def _transform_result(
         self,
         result: Union[Dict[str, Any], List[Dict[str, Any]]]
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -196,20 +199,24 @@ class LayoutDetectionService(LayoutDetectionBaseService):
         
         if not isinstance(image_input, list):
             image_input = [image_input]
-            
-        def _to_numpy(img):
-            if isinstance(img, Image.Image):
-                return np.array(img)
-            return img
-        image_input_trans = [_to_numpy(img) for img in image_input]
+        
+        # Run inference in a separate thread to avoid blocking the event loop
+        def run_full_inference_sync(inputs):
+            def _to_numpy(img):
+                if isinstance(img, Image.Image):
+                    return np.array(img)
+                return img
+            image_input_trans = [_to_numpy(img) for img in image_input]
 
-        result = await asyncio.to_thread(
-            self._model_service.predict,
-            image_input_trans,
-            batch_size=self._batch_size,
-            layout_nms=True
-        )
-        return await self._transform_result(result)
+            result = self._model_service.predict(
+                image_input_trans,
+                batch_size=self._batch_size,
+                layout_nms=True
+            )
+            return self._transform_result(result)
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.cpu_executor, run_full_inference_sync, image_input)
 
     async def _get_layout_pdf(
         self,
@@ -222,14 +229,19 @@ class LayoutDetectionService(LayoutDetectionBaseService):
         Returns:
             List of Dict: Layout detection results for each page in the PDF. format same as get_layout_image.
         """
-        result = await asyncio.to_thread(
-            self._model_service.predict,
-            file_path,
-            batch_size=self._batch_size,
-            layout_nms=True
-        )
-        return await self._transform_result(result)
 
+        # Run inference in a separate thread to avoid blocking the event loop
+        def run_full_inference_sync(file_path):
+            result = self._model_service.predict(
+                file_path,
+                batch_size=self._batch_size,
+                layout_nms=True
+            )
+            return self._transform_result(result)
+    
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.cpu_executor, run_full_inference_sync, file_path)
+    
 
 class LayoutDetectionServiceONNX(LayoutDetectionBaseService):
     CATEGORY_LIST = [
@@ -245,7 +257,8 @@ class LayoutDetectionServiceONNX(LayoutDetectionBaseService):
         model_path="/app/models/pp_doclayoutv2.onnx",
         concurrency: int = 4,
         threshold: float = 0.5,
-        use_cpu: bool = True
+        use_cpu: bool = True,
+        cpu_executor = None 
     ):
         self._model_path = model_path
         ie = Core()
@@ -259,13 +272,76 @@ class LayoutDetectionServiceONNX(LayoutDetectionBaseService):
         self._model = ie.compile_model(model, "CPU" if use_cpu else "GPU")
         self._concurrency = concurrency
         self._threshold = threshold
+        self.cpu_executor = cpu_executor
 
         def infer_callback(request, userdata):
             dets = request.get_output_tensor(0).data
             userdata["future"].set_result(dets)
         self._infer_queue = AsyncInferQueue(self._model, jobs=concurrency)
-        self._infer_queue.set_callback(infer_callback)
-        
+        self._infer_queue.set_callback(infer_callback)  
+
+    def _preprocess(self, img, orig_h, orig_w):
+        img_resized = cv2.resize(img, (800, 800))
+        img_input = img_resized.astype(np.float32) / 255.0
+
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+        img_input = (img_input - mean) / std
+        img_input = img_input.transpose(2, 0, 1)[None, ...]
+
+        im_shape = np.array([[orig_h, orig_w]], dtype=np.float32)
+        scale_factor = np.array([[800 / orig_h, 800 / orig_w]], dtype=np.float32)
+
+        return img_input, im_shape, scale_factor
+    
+    def _postprocess(self, dets, scale_factor, orig_w, orig_h, page_no):
+
+        valid = dets[dets[:, 1] >= self._threshold]
+        # restore to original image
+        scale_y = scale_factor[0, 0]
+        scale_x = scale_factor[0, 1]
+        boxes = []
+        for det in valid:
+            cls_id = int(det[0])
+            score = det[1]
+            x1, y1, x2, y2 = det[2:6]
+
+            x1 *= scale_x
+            x2 *= scale_x
+            y1 *= scale_y
+            y2 *= scale_y
+
+            box= {
+                'category': self.align_category(self.CATEGORY_LIST[cls_id]),
+                'bbox': [float(x1), float(y1), float(x2), float(y2)]
+            }
+            boxes.append(box)
+        if not boxes:
+            logger.warning(f"No boxes detected on image. Return whole image as a single box.")
+            boxes = [{
+                'category': 'Picture',
+                'bbox': [0, 0, orig_w, orig_h]
+            }]
+        inline_formula_boxes = self.remove_contained_boxes(boxes)
+
+        result = {
+            'page_no': page_no,
+            'width': orig_w,
+            'height': orig_h,
+            'full_layout_info': boxes
+        }
+        if inline_formula_boxes:
+            inline_formula_boxes = {
+                'page_no': page_no,
+                'width': orig_w,
+                'height': orig_h,
+                'full_layout_info': inline_formula_boxes
+            }
+        else:
+            inline_formula_boxes = None
+        return result, inline_formula_boxes 
+    
     async def _get_layout_image(
         self,
         image_input: Union[str, List[str], Image.Image, List[Image.Image], 
@@ -275,114 +351,94 @@ class LayoutDetectionServiceONNX(LayoutDetectionBaseService):
         if not isinstance(image_input, list):
             image_input = [image_input]
 
-        def _to_numpy(img):
-            if isinstance(img, Image.Image):
-                return np.array(img)
-            return img
-        image_input_trans = [_to_numpy(img) for img in image_input]
+        loop = asyncio.get_running_loop()
+        def _convert_batch(imgs):
+            def _to_numpy(img):
+                if isinstance(img, Image.Image):
+                    return np.array(img)
+                return img
+            return [_to_numpy(img) for img in imgs]
 
-        completion_future = []
+        image_input_trans = await loop.run_in_executor(self.cpu_executor, _convert_batch, image_input)
+
+        preprocess_tasks = []
+        for img in image_input_trans:
+            orig_h, orig_w = img.shape[:2]
+            preprocess_tasks.append(
+                loop.run_in_executor(self.cpu_executor, self._preprocess, img, orig_h, orig_w)
+            )
+        preprocessed_data = await asyncio.gather(*preprocess_tasks)
+        futures = []
         results = []
         inline_formula_boxes_all = []
-
-        for i, img in enumerate(image_input_trans):
-            # resize the input image 
-            orig_h, orig_w = img.shape[:2]
+        def _submit_infer(inputs, udata):
+            self._infer_queue.start_async(inputs, udata)
+        for page_no, (img_input, im_shape, scale_factor) in enumerate(preprocessed_data):
+            orig_h, orig_w = image_input_trans[page_no].shape[:2]
             
-            img_resized = cv2.resize(img, (800, 800))
-            img_input = img_resized.astype(np.float32) / 255.0
-
-            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-
-            img_input = (img_input - mean) / std
-            img_input = img_input.transpose(2, 0, 1)[None, ...]
-
-            im_shape = np.array([[orig_h, orig_w]], dtype=np.float32)
-            scale_factor = np.array([[800 / orig_h, 800 / orig_w]], dtype=np.float32)
-
             future = asyncio.Future()
-            userdata = {
-                "future": future
+            userdata = {"future": future}
+            
+            inputs_data = {
+                "image": img_input,
+                "im_shape": im_shape,
+                "scale_factor": scale_factor
             }
-            self._infer_queue.start_async(
-                {
-                    "image": img_input,
-                    "im_shape": im_shape,
-                    "scale_factor": scale_factor
-                },
-                userdata
+            await loop.run_in_executor(self.cpu_executor, _submit_infer, inputs_data, userdata)
+            futures.append((future, scale_factor, orig_w, orig_h, page_no))
+        
+        dets_list = await asyncio.gather(
+            *[f for f, *_ in futures]
+        )
+
+        postprocess_tasks = []
+        for ( _, scale_factor, orig_w, orig_h, page_no), dets in zip(futures, dets_list):
+            postprocess_tasks.append(
+                loop.run_in_executor(
+                    self.cpu_executor, 
+                    self._postprocess, 
+                    dets, scale_factor, orig_w, orig_h, page_no
+                )
             )
-            dets = await future
-            valid = dets[dets[:, 1] >= self._threshold]
+        postprocess_results = await asyncio.gather(*postprocess_tasks)
 
-            # restore to original image
-            scale_y = scale_factor[0, 0]
-            scale_x = scale_factor[0, 1]
-            boxes = []
-            for det in valid:
-                cls_id = int(det[0])
-                score = det[1]
-                x1, y1, x2, y2 = det[2:6]
-
-                x1 *= scale_x
-                x2 *= scale_x
-                y1 *= scale_y
-                y2 *= scale_y
-
-                box= {
-                    'category': self.align_category(self.CATEGORY_LIST[cls_id]),
-                    'bbox': [float(x1), float(y1), float(x2), float(y2)]
-                }
-                boxes.append(box)
-            if not boxes:
-                logger.warning(f"No boxes detected on image. Return whole image as a single box.")
-                boxes = [{
-                    'category': 'Picture',
-                    'bbox': [0, 0, orig_w, orig_h]
-                }]
-            inline_formula_boxes = self.remove_contained_boxes(boxes)
-
-            result = {
-                'page_no': i,
-                'width': orig_w,
-                'height': orig_h,
-                'full_layout_info': boxes
-            }
-            if inline_formula_boxes:
-                inline_formula_boxes = {
-                    'page_no': i,
-                    'width': orig_w,
-                    'height': orig_h,
-                    'full_layout_info': inline_formula_boxes
-                }
-            else:
-                inline_formula_boxes = None
-
-            results.append(result)
-            inline_formula_boxes_all.append(inline_formula_boxes)
+        for res, inline in postprocess_results:
+            results.append(res)
+            inline_formula_boxes_all.append(inline)
                 
         return results, inline_formula_boxes_all
 
-async def get_layout_detection_service(use_onnx: bool = True, concurrency = 16) -> LayoutDetectionService:
+async def get_layout_detection_service(
+    cpu_executor = None, 
+    use_onnx: bool = True,
+    onnx_concurrency = 4,
+    onnx_threshold = 0.5,
+    onnx_use_cpu = True,
+) -> LayoutDetectionService:
     global _layout_detection_model_service
     if _layout_detection_model_service is None:
-        logger.info("Loading layout detection model...")
+        logger.info("Loading layout detection ONNX model...")
         if use_onnx:
-            _layout_detection_model_service = await asyncio.to_thread(LayoutDetectionServiceONNX)
+            _layout_detection_model_service = await asyncio.to_thread(
+                LayoutDetectionServiceONNX,
+                concurrency=onnx_concurrency,
+                threshold=onnx_threshold,
+                use_cpu=onnx_use_cpu,
+                cpu_executor=cpu_executor)
         else:
-            _layout_detection_model_service = await asyncio.to_thread(LayoutDetectionService)
+            logger.info("Loading layout detection model...")
+            _layout_detection_model_service = await asyncio.to_thread(LayoutDetectionService, cpu_executor=cpu_executor)
     return _layout_detection_model_service
 
 async def get_layout_image(image_input) -> List[Dict[str, Any]]:
-    model_service = await get_layout_detection_service() # use default config if havve not loaded by get_layout_detection_service in advance
-    return await model_service._get_layout_image(image_input)
+    if _layout_detection_model_service is None:
+        logger.error("Layout detection model is not loaded.")
+    return await _layout_detection_model_service._get_layout_image(image_input)
 
 async def get_layout_pdf(file_path: str) -> Dict[str, Any]:
-    if isinstance(_layout_detection_model_service, LayoutDetectionServiceONNX) or _layout_detection_model_service is None:
-        raise RuntimeError("LayoutDetectionServiceONNX does not support PDF input.")
-    model_service = await get_layout_detection_service()
-    return await model_service._get_layout_pdf(file_path)
+    if _layout_detection_model_service is None:
+        logger.error("Layout detection model is not loaded.")
+    return await _layout_detection_model_service._get_layout_pdf(file_path)
 
 
 
