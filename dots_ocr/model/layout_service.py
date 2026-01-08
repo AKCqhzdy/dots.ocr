@@ -275,8 +275,10 @@ class LayoutDetectionServiceONNX(LayoutDetectionBaseService):
         self.cpu_executor = cpu_executor
 
         def infer_callback(request, userdata):
-            dets = request.get_output_tensor(0).data
-            userdata["future"].set_result(dets)
+            dets = request.get_output_tensor(0).data.copy()
+            loop = userdata["loop"]
+            future = userdata["future"]
+            loop.call_soon_threadsafe(future.set_result, dets)
         self._infer_queue = AsyncInferQueue(self._model, jobs=concurrency)
         self._infer_queue.set_callback(infer_callback)  
 
@@ -295,7 +297,7 @@ class LayoutDetectionServiceONNX(LayoutDetectionBaseService):
 
         return img_input, im_shape, scale_factor
     
-    def _postprocess(self, dets, scale_factor, orig_w, orig_h, page_no):
+    def _postprocess(self, dets, scale_factor, orig_w, orig_h):
 
         valid = dets[dets[:, 1] >= self._threshold]
         # restore to original image
@@ -326,14 +328,14 @@ class LayoutDetectionServiceONNX(LayoutDetectionBaseService):
         inline_formula_boxes = self.remove_contained_boxes(boxes)
 
         result = {
-            'page_no': page_no,
+            'page_no': None,
             'width': orig_w,
             'height': orig_h,
             'full_layout_info': boxes
         }
         if inline_formula_boxes:
             inline_formula_boxes = {
-                'page_no': page_no,
+                'page_no': None,
                 'width': orig_w,
                 'height': orig_h,
                 'full_layout_info': inline_formula_boxes
@@ -369,35 +371,32 @@ class LayoutDetectionServiceONNX(LayoutDetectionBaseService):
             )
         preprocessed_data = await asyncio.gather(*preprocess_tasks)
         futures = []
+        args = []
         results = []
         inline_formula_boxes_all = []
-        def _submit_infer(inputs, udata):
-            self._infer_queue.start_async(inputs, udata)
-        for page_no, (img_input, im_shape, scale_factor) in enumerate(preprocessed_data):
-            orig_h, orig_w = image_input_trans[page_no].shape[:2]
-            
+        for img_input, im_shape, scale_factor in preprocessed_data:
             future = asyncio.Future()
-            userdata = {"future": future}
+            userdata = {"future": future, "loop": loop}
             
             inputs_data = {
                 "image": img_input,
                 "im_shape": im_shape,
                 "scale_factor": scale_factor
             }
-            await loop.run_in_executor(self.cpu_executor, _submit_infer, inputs_data, userdata)
-            futures.append((future, scale_factor, orig_w, orig_h, page_no))
+            self._infer_queue.start_async(inputs_data, userdata)
+            futures.append(future)
+            args.append((im_shape, scale_factor))
         
-        dets_list = await asyncio.gather(
-            *[f for f, *_ in futures]
-        )
+        dets_list = await asyncio.gather(*futures)
 
         postprocess_tasks = []
-        for ( _, scale_factor, orig_w, orig_h, page_no), dets in zip(futures, dets_list):
+        for (im_shape, scale_factor), dets in zip(args, dets_list):
+            orig_h, orig_w = int(im_shape[0,0]), int(im_shape[0,1])
             postprocess_tasks.append(
                 loop.run_in_executor(
                     self.cpu_executor, 
                     self._postprocess, 
-                    dets, scale_factor, orig_w, orig_h, page_no
+                    dets, scale_factor, orig_w, orig_h
                 )
             )
         postprocess_results = await asyncio.gather(*postprocess_tasks)
