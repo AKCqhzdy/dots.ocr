@@ -95,7 +95,6 @@ class OcrTask:
     @traced()
     async def _submit_ocr_inference_task(self, task_id, image, prompt):
         task = OcrInferenceTask(
-            self._stats,
             start_child_span(f"OcrInferenceTask {task_id}"),
             self._parser.ocr_inference_task_options,
             task_id,
