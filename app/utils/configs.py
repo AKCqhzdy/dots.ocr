@@ -122,6 +122,11 @@ class Configs(BaseSettings):
     # Open it for pipeline parsing prepare
     PARSE_WITH_PIPELINE: bool = True
 
+    # Whether to use ONNX model for layout detection and layout reading in pipeline method.
+    USE_ONNX: bool = True
+    COMMON_CPU_WORKERS_NUM: int = 2 if USE_ONNX else os.cpu_count()
+    ONNX_CPU_WORKERS_NUM: int = os.cpu_count()-2 if USE_ONNX else 0
+
 
 BASE_DIR: Path = Path(__file__).resolve().parent.parent
 INPUT_DIR: Path = BASE_DIR / "input"

@@ -26,6 +26,7 @@ from sys import stderr
 import httpx
 import uvicorn
 from aiorwlock import RWLock
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -72,7 +73,6 @@ describe_picture_task_executor_pool = TaskExecutorPool(
     max_queue_size=configs.DESCRIBE_PICTURE_TASK_QUEUE_MAX_SIZE,
     name="PictureDescriptionTask",
 )
-# TODO(zihao): can i move it into lifespan? what's more, i deploy layout dectection model in cpu now. try to move it to gpu.
 if configs.PARSE_WITH_PIPELINE:
     layout_detection_task_executor_pool = BatchTaskExecutorPool(
         concurrent_task_limit=configs.CONCURRENT_LAYOUT_DETECTION_TASK_LIMIT,
@@ -87,6 +87,7 @@ if configs.PARSE_WITH_PIPELINE:
         name="LocalLayoutReaderTask",
     )
 
+cpu_executor = ThreadPoolExecutor(max_workers=configs.COMMON_CPU_WORKERS_NUM)
 page_parser = PageParser(
     ocr_inference_task_options=InferenceTaskOptions(
         model_name=configs.OCR_INFERENCE_NAME,
@@ -134,6 +135,7 @@ page_parser = PageParser(
         task_retry_count=configs.TASK_RETRY_COUNT,
     ),
     concurrency_limit=configs.CONCURRENT_OCR_TASK_LIMIT,
+    cpu_executor=cpu_executor,
 )
 dots_parser = DotsOCRParser(
     ocr_task_executor_pool=ocr_task_executor_pool,
@@ -154,7 +156,11 @@ async def lifespan(_: FastAPI):
     logger.add(stderr, level=configs.LOG_LEVEL)
     
     if configs.PARSE_WITH_PIPELINE:
-        await get_layout_detection_service()
+        await get_layout_detection_service(
+            cpu_executor,
+            configs.USE_ONNX,
+            configs.ONNX_CPU_WORKERS_NUM,
+            )
         await get_layout_reader_service()
 
     await pg_vector_manager.ensure_table_exists()
@@ -791,6 +797,17 @@ async def health_check():
 async def health():
     return await health_check()
 
+async def heartbeat():
+    while True:
+        now_time = datetime.now(UTC)
+        logger.info(f"-------------------{now_time}")
+        await asyncio.sleep(0.5)
+
+@app.post("/test")
+async def test_endpoint():
+    asyncio.create_task(heartbeat())
+    return {"message": "Test endpoint is working!"}
+    
 
 @app.get("/token_usage/{ocr_job_id}")
 async def token_usage(ocr_job_id: str):

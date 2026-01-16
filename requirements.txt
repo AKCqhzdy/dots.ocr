@@ -36,6 +36,7 @@ opentelemetry-instrumentation-httpx==0.58b0
 opentelemetry-instrumentation-asyncpg==0.58b0
 opentelemetry-instrumentation-openai==0.47.3
 opentelemetry-instrumentation-threading==0.58b0
+openvino
 prometheus-fastapi-instrumentator==7.1.0
 
 # need download by run outside the requirement

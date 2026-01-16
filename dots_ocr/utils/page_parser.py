@@ -49,6 +49,7 @@ class PageParser:
         describe_picture_task_options_api: InferenceTaskOptions = None,
         parse_options: ParseOptions = None,
         concurrency_limit=8,
+        cpu_executor: ThreadPoolExecutor = None,
     ):
         assert (
             parse_options.min_pixels is None or parse_options.min_pixels >= MIN_PIXELS
@@ -100,7 +101,7 @@ class PageParser:
         self.concurrency_limit = concurrency_limit
         self.semaphore = asyncio.Semaphore(self.concurrency_limit)
         self.semaphore_reader = asyncio.Semaphore(self.concurrency_limit)  # TODO(zihao) can larger. need meansure later
-        self.cpu_executor = ThreadPoolExecutor(max_workers=os.cpu_count())
+        self.cpu_executor = cpu_executor
 
     @property
     def page_retry_number(self):

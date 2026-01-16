@@ -196,14 +196,13 @@ class InferenceTask:
         if prompt is None:
             prompt = self._prompt
 
-        def resize_image(img: Image.Image, max_long_size = 2048) -> Image.Image:
-            # if max(img.width, img.height) <= max_long_size:
-            return img
-            # ratio = max_long_size / max(img.width, img.height)
-            # new_size = (int(img.width * ratio), int(img.height * ratio))
-            # logger.info(f"Resizing image from {img.width}x{img.height} to {new_size}")
-            # return img.resize(new_size, Image.Resampling.LANCZOS)
-        image = resize_image(self._image.copy())
+        max_long_size = 2048
+        image = self._image
+        if max(image.width, image.height) > max_long_size:
+            ratio = max_long_size / max(image.width, image.height)
+            new_size = (int(image.width * ratio), int(image.height * ratio))
+            logger.info(f"Resizing image from {image.width}x{image.height} to {new_size}")
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
         messages = [
             {
                 "role": "user",
@@ -226,6 +225,8 @@ class InferenceTask:
             logger.debug(
                 f"Sending request {self._task_id} to vLLM model {self._options.model_name}: image size: {self.size()/1024:.2f} KB. image resolution: {image.width}x{image.height}. "
             )
+            # save the image to local for debug
+            image.save(f"/tmp/{self._task_id}_input_image.png")
             response = await self._client.chat.completions.create(
                 messages=messages,
                 model=self._options.model_name,
@@ -265,6 +266,8 @@ class InferenceTask:
         except openai.APIStatusError as e:
             logger.error(f"OpenAI API Error for task {self.task_id}: {e}")
             logger.error(f"Error details: Status: {e.status_code}, Msg: {e.message}")
+            if getattr(e, "status_code", None) == 400 and "data_inspection_failed" in str(e):
+                return f"[ERROR] Input data may contain inappropriate content."
             raise e
             
         except httpx.TimeoutException:
