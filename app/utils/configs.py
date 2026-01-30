@@ -123,7 +123,7 @@ class Configs(BaseSettings):
     PARSE_WITH_PIPELINE: bool = True
 
     # Whether to use ONNX model for layout detection and layout reading in pipeline method.
-    USE_ONNX: bool = True
+    USE_ONNX: bool = False
     COMMON_CPU_WORKERS_NUM: int = 2 if USE_ONNX else os.cpu_count()
     ONNX_CPU_WORKERS_NUM: int = os.cpu_count()-2 if USE_ONNX else 0
 
